@@ -21,7 +21,7 @@ import type { SiteName } from "./env";
  *  - hanging: points at a port that accepts a connection and never answers
  *  - badKey: points at the real database with a key it rejects (PostgREST 401)
  *  - missingEnv: has no database variables at all
- *  - malformed: points at a stub that answers the chart functions with a bad shape
+ *  - malformed: points at a stub that answers the chart functions and the poller tables with a bad shape
  *
  * Keys are read from the Supabase CLI and kept in process memory.
  * They are never written to a file or printed. Each site's stdout and stderr go
@@ -131,6 +131,11 @@ function stubDatabase(): Promise<{ port: number }> {
             { rank: "one", key: "k", name: "n", plays: 1, minutes: 1, last_week_rank: null, peak_rank: 1, weeks_on_chart: 1 },
           ]);
         }
+        // The status route reads these two tables. The run has a finish time that is not a date.
+        if (req.url?.includes("/rest/v1/poller_runs")) {
+          return send(200, [{ outcome: "ok", finished_at: "not-a-date", failure_kind: null }]);
+        }
+        if (req.url?.includes("/rest/v1/poller_state")) return send(200, []);
         return send(404, { message: "not found" });
       });
     });
