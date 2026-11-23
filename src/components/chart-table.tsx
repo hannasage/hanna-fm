@@ -9,7 +9,12 @@ import {
 import type { ChartKind, ChartRow } from "../lib/charts";
 import styles from "./chart-table.module.css";
 
-const COLUMNS = ["Rank", "Move", "Title", "Last week", "Peak", "Weeks", "Plays", "Minutes"] as const;
+/** The first column is named for what the chart ranks. */
+const NAME_COLUMN: Record<ChartKind, string> = { track: "Title", artist: "Artist", album: "Album" };
+
+function columnsFor(kind: ChartKind): string[] {
+  return ["Rank", "Move", NAME_COLUMN[kind], "Last week", "Peak", "Weeks", "Plays", "Minutes"];
+}
 
 const count = new Intl.NumberFormat("en-US");
 
@@ -52,7 +57,7 @@ function Move({ row }: { row: ChartRow }) {
         </>
       );
     default:
-      return <span>{"–"}</span>;
+      return <span className={styles.same}>{"–"}</span>;
   }
 }
 
@@ -70,7 +75,7 @@ export function ChartTable({ kind, week, rows }: { kind: ChartKind; week: string
       </caption>
       <thead role="rowgroup" className={styles.head}>
         <tr role="row">
-          {COLUMNS.map((name) => (
+          {columnsFor(kind).map((name) => (
             <th key={name} scope="col" role="columnheader">
               {name}
             </th>

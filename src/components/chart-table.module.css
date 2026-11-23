@@ -14,13 +14,8 @@
 
 /* The caption names the chart being read, so it is the second voice on the page after the h1. */
 .caption {
+  composes: heading from "./shared.module.css";
   padding-bottom: 0.75rem;
-  color: var(--ink);
-  font-family: var(--font-mono);
-  font-size: 1rem;
-  font-weight: 600;
-  letter-spacing: 0;
-  line-height: 1.4;
   text-align: left;
 }
 
@@ -108,8 +103,8 @@
   text-align: right;
 }
 
-/* Plays decide the rank, so they are the one number set in full ink. */
-.plays {
+/* Plays decide the rank, so they are the one number set in full ink. The longer selector beats .stat in any source order. */
+.stat.plays {
   color: var(--ink);
   font-weight: 600;
 }
@@ -135,6 +130,28 @@
 
 .flagBack {
   color: var(--signal);
+}
+
+/*
+ * Forced colours drop the fill, so a solid NEW and an outlined RE-ENTRY would both be plain boxes. RE-ENTRY keeps a
+ * dashed edge so the two still differ without colour.
+ */
+@media (forced-colors: active) {
+  .flagBack {
+    border-style: dashed;
+  }
+}
+
+/*
+ * Paper often drops backgrounds, and the pale text of a solid NEW would vanish with its fill.
+ * In print NEW is outlined in a heavier line, and RE-ENTRY stays a thin one. Both text colours are dark enough for paper.
+ */
+@media print {
+  .flagNew {
+    background: none;
+    border-width: 2px;
+    color: var(--signal);
+  }
 }
 
 .sr {

@@ -1,0 +1,54 @@
+/*
+ * Pieces that more than one component uses. A component takes one with `composes`.
+ * A composed rule and a local rule never set the same property, so the order of the files does not matter.
+ * Where a local rule must beat a composed one it uses a longer selector, such as `.step.stepOff`.
+ */
+
+/* The lamp: a small square before a line of text, like an indicator on a front panel. It is on (signal colour) by default. */
+.lamp {
+  --lamp: 0.625rem;
+}
+
+.lamp::before {
+  content: "";
+  display: inline-block;
+  width: var(--lamp);
+  height: var(--lamp);
+  margin-right: var(--lamp);
+  background: var(--signal);
+  vertical-align: 0.05em;
+  /* Paper keeps the square when a person prints with background graphics off. */
+  print-color-adjust: exact;
+}
+
+/* The same lamp, switched off: an outline and no fill. */
+.lampOff::before {
+  background: transparent;
+  border: 1px solid var(--muted);
+}
+
+/* The name of the chart being read: the second voice on the page after the h1. */
+.heading {
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.4;
+}
+
+/* A control with a box: the week select, Show, the week links and the way on from a message. */
+.control {
+  min-height: 2.75rem;
+  border: 1px solid var(--ink);
+  border-radius: 0;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--control-size, 0.875rem);
+}
+
+/* Every link or button that has a hover state underlines in the same way. */
+.hoverUnderline:hover {
+  text-decoration: underline;
+  text-underline-offset: 0.25em;
+}

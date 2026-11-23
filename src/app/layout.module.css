@@ -14,7 +14,7 @@
 
 .skip:focus-visible {
   transform: translateY(0);
-  /* The link is a block of ink, so the ring is drawn in the page colour. The signal colour on ink reads under 3:1. */
+  /* The link is a block of ink, so the ring is drawn in the page colour: about 15:1. The signal colour on ink reads 3.0:1 in light and 1.9:1 in dark. */
   outline-color: var(--bg);
   outline-offset: -4px;
 }

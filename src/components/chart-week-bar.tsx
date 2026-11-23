@@ -29,7 +29,7 @@ export function ChartWeekBar({ kind, bounds, choice }: Props) {
           {weeks.map((week) => (
             <option key={week} value={week}>
               {formatWeek(week)}
-              {week >= currentWeek ? " (in progress)" : ""}
+              {week >= currentWeek ? " (so far)" : ""}
             </option>
           ))}
         </select>

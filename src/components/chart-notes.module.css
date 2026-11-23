@@ -6,17 +6,8 @@
   background: var(--wash);
 }
 
-.marker::before {
-  content: "";
-  display: inline-block;
-  width: 0.625rem;
-  height: 0.625rem;
-  margin-right: 0.625rem;
-  background: var(--signal);
-  vertical-align: 0.05em;
-}
-
 .messageTitle {
+  composes: lamp from "./shared.module.css";
   margin: 0 0 0.5rem;
   font-family: var(--font-mono);
   font-size: 1.25rem;
@@ -32,38 +23,21 @@
 
 /* The way on is a button-sized link, like the week links, so it is a 44 px target. */
 .action {
+  composes: control hoverUnderline from "./shared.module.css";
   display: inline-flex;
   align-items: center;
-  min-height: 2.75rem;
   padding: 0.25rem 1rem;
-  border: 1px solid var(--ink);
-  color: var(--ink);
-  font-family: var(--font-mono);
-  font-size: 0.875rem;
   font-weight: 600;
   text-decoration: none;
 }
 
-.action:hover {
-  text-decoration: underline;
-  text-underline-offset: 0.25em;
-}
-
 .progress {
+  composes: lamp from "./shared.module.css";
   max-width: none;
   margin-top: 1rem;
   padding: 0.75rem 1rem;
   border: 1px dashed var(--ink);
   color: var(--ink);
-}
-
-.progress::before {
-  content: "";
-  display: inline-block;
-  width: 0.625rem;
-  height: 0.625rem;
-  margin-right: 0.625rem;
-  background: var(--signal);
 }
 
 .rules {
@@ -109,15 +83,15 @@
 }
 
 .emptyCaption {
-  color: var(--ink);
-  font-family: var(--font-mono);
-  font-size: 1rem;
-  font-weight: 600;
-  line-height: 1.4;
+  composes: heading from "./shared.module.css";
 }
 
-/* An empty slot is dashed, like the disabled week link. The hollow square is the lamp, switched off. */
+/*
+ * An empty slot is dashed, as the disabled week link is. It uses the muted ink and not the rule colour of that link,
+ * because this box carries the message and the link is only switched off. The hollow square is the lamp, switched off.
+ */
 .emptyText {
+  composes: lamp lampOff from "./shared.module.css";
   max-width: none;
   margin-top: 0.75rem;
   padding: 2rem 1.25rem;
@@ -125,11 +99,4 @@
   color: var(--ink);
 }
 
-.emptyText::before {
-  content: "";
-  display: inline-block;
-  width: 0.625rem;
-  height: 0.625rem;
-  margin-right: 0.625rem;
-  border: 1px solid var(--muted);
-}
+

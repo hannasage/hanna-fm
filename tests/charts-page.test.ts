@@ -361,6 +361,18 @@ describe("the Charts page with data", () => {
       }
     });
 
+    it.each([
+      ["kind=artist", "Artist"],
+      ["kind=album", "Album"],
+    ] as const)("names the first column after what the chart ranks (%s)", async (query, head) => {
+      const { html } = await page(query);
+      const heads = [...tableOf(html)!.matchAll(/<th\b([^>]*)>([\s\S]*?)<\/th>/g)]
+        .filter((m) => (m[1] ?? "").includes('scope="col"'))
+        .map((m) => textOf(m[2] ?? ""));
+      expect(heads[2]).toBe(head);
+      expect(heads).toHaveLength(8);
+    });
+
     it("sets numbers in tabular figures", () => {
       const css = readFileSync(join(process.cwd(), "src/components/chart-table.module.css"), "utf8");
       expect(css).toMatch(/font-variant-numeric:\s*tabular-nums/);
@@ -671,6 +683,15 @@ describe("the week still running", () => {
     expect(textOf(/<caption[^>]*>([\s\S]*?)<\/caption>/.exec(html)![1]!)).toContain("Nov 23 – Nov 29, 2026");
     expect(rowsOf(html)[0]!.cells[2]!.text).toContain("Stand-in 2026-11-23");
     expect(textOf(html).toLowerCase()).toContain("week in progress");
+  });
+
+  it("labels the running week \"so far\" in the week list, and no other week", async () => {
+    const { html } = await page("week=2026-11-23", "inProgress");
+    const form = elementOf(html, "form", /method="get"/i)!;
+    const labels = [...form.matchAll(/<option\b[^>]*>([\s\S]*?)<\/option>/g)].map((m) => textOf(m[1] ?? ""));
+    expect(labels[0]).toBe("Nov 23 – Nov 29, 2026 (so far)");
+    expect(labels.filter((label) => label.includes("(so far)"))).toHaveLength(1);
+    expect(form).not.toContain("(in progress)");
   });
 
   it("opens on the running week, with a note, when it is the only week", async () => {

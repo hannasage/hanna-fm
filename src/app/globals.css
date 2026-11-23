@@ -39,10 +39,9 @@ html {
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
   accent-color: var(--signal);
-  scrollbar-color: var(--rule) var(--bg);
 }
 
-/* The parts the browser draws take the palette too. Both pairs read at 5:1 or better. */
+/* The parts the browser draws take the palette too. The selection reads at 5:1 or better. */
 ::selection {
   background: var(--signal);
   color: var(--bg);
