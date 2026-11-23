@@ -6,6 +6,7 @@ import {
   readFileSync,
   rmSync,
 } from "node:fs";
+import { createServer as createHttpServer } from "node:http";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,6 +21,7 @@ import type { SiteName } from "./env";
  *  - hanging: points at a port that accepts a connection and never answers
  *  - badKey: points at the real database with a key it rejects (PostgREST 401)
  *  - missingEnv: has no database variables at all
+ *  - malformed: points at a stub that answers the chart functions with a bad shape
  *
  * Keys are read from the Supabase CLI and kept in process memory.
  * They are never written to a file or printed. Each site's stdout and stderr go
@@ -83,6 +85,56 @@ function hangingDatabase(): Promise<{ port: number }> {
     });
     server.on("error", reject);
     server.on("close", () => sockets.forEach((s) => s.destroy()));
+    server.listen(0, "127.0.0.1", () => {
+      servers.push(server);
+      const address = server.address();
+      resolve({ port: typeof address === "object" && address ? address.port : 0 });
+    });
+  });
+}
+
+/**
+ * A stub of the two chart functions that answers with data the real database never sends.
+ * The kind in the request picks the fault, so one stub serves every case:
+ *  - track: a chart row whose rank is text
+ *  - artist: bounds with no latest_week column
+ *  - album: bounds whose latest_week is not a date
+ *  - any kind with limit 2: a chart that is an object, not a list
+ */
+function stubDatabase(): Promise<{ port: number }> {
+  return new Promise((resolve, reject) => {
+    const server = createHttpServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk: Buffer) => (body += chunk.toString("utf8")));
+      req.on("end", () => {
+        let args: { p_kind?: string; p_limit?: number } = {};
+        try {
+          args = JSON.parse(body || "{}") as typeof args;
+        } catch {
+          // A body that is not JSON gets the empty arguments.
+        }
+        const send = (status: number, payload: unknown) => {
+          res.writeHead(status, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(payload));
+        };
+        const bounds = { first_week: "2026-02-02", latest_week: "2026-02-16", current_week: "2026-11-23" };
+        if (req.url?.includes("/rpc/chart_bounds")) {
+          if (args.p_kind === "artist") {
+            return send(200, [{ first_week: bounds.first_week, current_week: bounds.current_week }]);
+          }
+          if (args.p_kind === "album") return send(200, [{ ...bounds, latest_week: "soon" }]);
+          return send(200, [bounds]);
+        }
+        if (req.url?.includes("/rpc/chart_weekly")) {
+          if (args.p_limit === 2) return send(200, { rows: [] });
+          return send(200, [
+            { rank: "one", key: "k", name: "n", plays: 1, minutes: 1, last_week_rank: null, peak_rank: 1, weeks_on_chart: 1 },
+          ]);
+        }
+        return send(404, { message: "not found" });
+      });
+    });
+    server.on("error", reject);
     server.listen(0, "127.0.0.1", () => {
       servers.push(server);
       const address = server.address();
@@ -250,8 +302,9 @@ async function start() {
 
   const deadPort = await freePort();
   const hanging = await hangingDatabase();
+  const stub = await stubDatabase();
 
-  const [healthy, refused, hang, badKey, missingEnv] = await Promise.all([
+  const [healthy, refused, hang, badKey, missingEnv, malformed] = await Promise.all([
     startSite("healthy", siteEnv({ SUPABASE_URL: apiUrl, SUPABASE_SERVICE_ROLE_KEY: serviceKey })),
     startSite(
       "refused",
@@ -263,6 +316,10 @@ async function start() {
     ),
     startSite("badKey", siteEnv({ SUPABASE_URL: apiUrl, SUPABASE_SERVICE_ROLE_KEY: "not-a-real-key" })),
     startSite("missingEnv", siteEnv({})),
+    startSite(
+      "malformed",
+      siteEnv({ SUPABASE_URL: `http://127.0.0.1:${stub.port}`, SUPABASE_SERVICE_ROLE_KEY: serviceKey }),
+    ),
   ]);
 
   process.env.TEST_API_URL = apiUrl;
@@ -277,6 +334,7 @@ async function start() {
   process.env.TEST_SITE_HANGING_URL = hang;
   process.env.TEST_SITE_BADKEY_URL = badKey;
   process.env.TEST_SITE_MISSINGENV_URL = missingEnv;
+  process.env.TEST_SITE_MALFORMED_URL = malformed;
 
   return stopAll;
 }

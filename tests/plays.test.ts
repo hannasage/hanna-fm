@@ -1,5 +1,5 @@
 import { Client } from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { readSiteLog, testEnv, waitForSiteLog, type SiteName } from "./support/env";
 
 /**
@@ -143,6 +143,9 @@ describe("GET /api/plays/count over HTTP", () => {
 });
 
 describe("the plays table", () => {
+  // Each test starts with no rows, so none depends on what an earlier one left or cleaned up.
+  beforeEach(clearPlays);
+
   it("rejects a second play with the same track and end time", async () => {
     await clearPlays();
     expect((await insertPlays([play(1)])).status).toBe(201);
@@ -208,8 +211,7 @@ describe("the plays table", () => {
     expect(((await res.json()) as { code: string }).code).toBe("23514");
   });
 
-  it("counts export rows and poll rows with no ms_played alike", async () => {
-    await clearPlays();
+  it("stores an export row, a poll row with a length and a poll row with none, and counts all three", async () => {
     expect(
       (
         await insertPlays([
@@ -221,7 +223,6 @@ describe("the plays table", () => {
     ).toBe(201);
 
     expect(await (await getCount()).json()).toEqual({ count: 3 });
-    await clearPlays();
   });
 
   it("accepts a zero ms_played and a missing album", async () => {
