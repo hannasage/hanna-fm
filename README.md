@@ -2,7 +2,7 @@
 
 A map of what Hanna listens to. A 3D genre map, weekly charts, a shelf of records, playlists to sample, and a recommender over one listener's library.
 
-This repository holds the website. The poller and the export import live in a separate private repository, so this one never holds Spotify tokens, data files or export files.
+This repository holds the website. The poller and the export import live in a separate repository, so this one never holds Spotify tokens, data files or export files.
 
 Status: in development.
 
@@ -12,3 +12,18 @@ Status: in development.
 - Secrets live in the host's secret stores only.
 - Four gates must pass at zero errors before a commit: typecheck, lint, test, build.
 - Work on a branch and open a pull request. Never commit to `main`.
+
+## Make your own
+
+Fork it, change it, and run it for yourself, for noncommercial purposes. You will need your own:
+
+- Supabase project, for the database.
+- Spotify developer app in Development Mode. Spotify requires the app owner to have Premium.
+- Copy of the companion ingest repository, which fills the database.
+- Host for the Next.js site, such as Vercel.
+
+A setup guide is not written yet. Spotify, MusicBrainz and Last.fm each have their own terms for what you may do with their data. Read them before you publish a fork.
+
+## License
+
+PolyForm Noncommercial 1.0.0. You may use, change and share this software for noncommercial purposes, including personal, hobby, research and educational use. You may not use it in a paid product or for commercial gain. This is a source-available license, not an open source license as the OSI defines one. See `LICENSE`.
