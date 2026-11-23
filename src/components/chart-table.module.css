@@ -1,0 +1,211 @@
+/*
+ * A chart is a real table. Numbers are set in tabular figures so the columns line up.
+ * Under 64rem each row becomes a small card: the rank, the title and the move on top, the five numbers
+ * under the title with their labels. The header row stays in the markup for screen readers.
+ */
+
+.table {
+  width: 100%;
+  margin-top: 1.5rem;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.caption {
+  padding-bottom: 0.75rem;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  letter-spacing: 0.02em;
+  text-align: left;
+}
+
+.head th {
+  padding: 0.5rem 0.5rem;
+  border-bottom: 2px solid var(--ink);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+.head th:nth-child(n + 4) {
+  text-align: right;
+}
+
+.head abbr {
+  text-decoration: none;
+}
+
+.row > * {
+  padding: 0.75rem 0.5rem;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: middle;
+}
+
+.rank {
+  width: 3.5rem;
+  font-family: var(--font-mono);
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+.move {
+  width: 6.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.title {
+  font-weight: 400;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.name {
+  display: block;
+  font-weight: 600;
+}
+
+.artist {
+  display: block;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.stat {
+  width: 5.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.9375rem;
+  text-align: right;
+}
+
+/* A flag is text in a box, so it reads without colour. */
+.flag {
+  display: inline-block;
+  padding: 0.0625rem 0.375rem;
+  border: 1px solid currentColor;
+  color: var(--signal);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+@media (max-width: 63.9375rem) {
+  .table,
+  .table tbody,
+  .caption {
+    display: block;
+  }
+
+  .head {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+
+  /*
+   * The first line holds the rank, the title and the move. A zero-height flex item (::after) forces the break,
+   * and a spacer (::before) lines the numbers up under the title. Both are placed with `order`, since the
+   * markup keeps the table's own column order: rank, move, title, numbers.
+   * The numbers wrap by their own width, so they never overlap, even at a large text size.
+   */
+  .row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    column-gap: 0.25rem;
+    padding: 0.875rem 0;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  .row::after {
+    content: "";
+    order: 3;
+    flex: 0 0 100%;
+    height: 0;
+  }
+
+  .row::before {
+    content: "";
+    order: 4;
+    flex: 0 0 2.5rem;
+  }
+
+  .row > * {
+    display: block;
+    width: auto;
+    padding: 0;
+    border: 0;
+  }
+
+  .rank {
+    order: 0;
+    flex: 0 0 2.5rem;
+    font-size: 1.5rem;
+    line-height: 1.2;
+  }
+
+  .title {
+    order: 1;
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  .move {
+    order: 2;
+    flex: 0 0 auto;
+    margin-left: 0.5rem;
+    text-align: right;
+  }
+
+  .stat {
+    order: 5;
+    flex: 1 1 3.25rem;
+    min-width: 0;
+    margin-top: 0.375rem;
+    font-size: 0.875rem;
+    text-align: left;
+    overflow-wrap: anywhere;
+  }
+
+  /* The label is drawn, not spoken: the header row already names each column for a screen reader. */
+  .stat::before {
+    content: attr(data-label);
+    content: attr(data-label) / "";
+    display: block;
+    color: var(--faint);
+    font-size: 0.6875rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+}
+
+/* On a very narrow screen the numbers take the whole width, three to a line. */
+@media (max-width: 21rem) {
+  .row::before {
+    display: none;
+  }
+
+  .stat {
+    flex: 0 0 calc(33.333% - 0.25rem);
+  }
+}

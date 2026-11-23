@@ -53,10 +53,12 @@ describe("the shell over HTTP", () => {
     expect(html).toMatch(/<div[^>]*id="now-playing"[^>]*><\/div>/);
   });
 
-  it("serves the Charts placeholder", async () => {
+  it("serves the Charts page, not the placeholder", async () => {
     const res = await fetch(`${base()}/charts`);
     expect(res.status).toBe(200);
-    expect(await res.text()).toContain("Charts coming next");
+    const html = await res.text();
+    expect(html).toMatch(/<h1[^>]*>Charts<\/h1>/);
+    expect(html).not.toContain("Charts coming next");
   });
 
   it("keeps the home page", async () => {

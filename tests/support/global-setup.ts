@@ -22,6 +22,10 @@ import type { SiteName } from "./env";
  *  - badKey: points at the real database with a key it rejects (PostgREST 401)
  *  - missingEnv: has no database variables at all
  *  - malformed: points at a stub that answers the chart functions and the poller tables with a bad shape
+ *  - inProgress: points at a stub that answers the chart functions with fixed weeks, so the Charts page can be
+ *    tested on a day when the running week has a chart. The real database reads its own clock, and the chart
+ *    cutoff is Eastern midnight one day back: a Monday play counts from Wednesday 00:00 Eastern, so on a
+ *    Monday or a Tuesday the running week has no chart.
  *
  * Keys are read from the Supabase CLI and kept in process memory.
  * They are never written to a file or printed. Each site's stdout and stderr go
@@ -148,6 +152,53 @@ function stubDatabase(): Promise<{ port: number }> {
   });
 }
 
+/**
+ * A stand-in for the two chart functions with a fixed idea of which week is running (2026-11-23).
+ * It checks nothing about the plays. The kind in the request picks the weeks:
+ *  - track: first 2026-11-02, latest 2026-11-23: the latest week is the running one
+ *  - artist: first, latest and current are all 2026-11-23: the running week is the only one
+ *  - album: first 2026-11-09, latest 2026-11-16: the latest week is finished
+ * Every chart it sends holds one row, named after the week that was asked for, so a test can see which week the page asked for.
+ */
+function inProgressDatabase(): Promise<{ port: number }> {
+  return new Promise((resolve, reject) => {
+    const server = createHttpServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk: Buffer) => (body += chunk.toString("utf8")));
+      req.on("end", () => {
+        let args: { p_kind?: string; p_week?: string } = {};
+        try {
+          args = JSON.parse(body || "{}") as typeof args;
+        } catch {
+          // A body that is not JSON gets the empty arguments.
+        }
+        const send = (status: number, payload: unknown) => {
+          res.writeHead(status, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(payload));
+        };
+        const current = "2026-11-23";
+        if (req.url?.includes("/rpc/chart_bounds")) {
+          if (args.p_kind === "artist") return send(200, [{ first_week: current, latest_week: current, current_week: current }]);
+          if (args.p_kind === "album") return send(200, [{ first_week: "2026-11-09", latest_week: "2026-11-16", current_week: current }]);
+          return send(200, [{ first_week: "2026-11-02", latest_week: current, current_week: current }]);
+        }
+        if (req.url?.includes("/rpc/chart_weekly")) {
+          return send(200, [
+            { rank: 1, key: "k", name: `Stand-in ${args.p_week ?? "none"}`, artist: "Stand-in artist", plays: 3, minutes: 9, last_week_rank: 1, peak_rank: 1, weeks_on_chart: 4 },
+          ]);
+        }
+        return send(404, { message: "not found" });
+      });
+    });
+    server.on("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      servers.push(server);
+      const address = server.address();
+      resolve({ port: typeof address === "object" && address ? address.port : 0 });
+    });
+  });
+}
+
 function tail(file: string): string {
   try {
     return lastLines(redactLines(readFileSync(file, "utf8"), knownSecrets), 50);
@@ -237,10 +288,12 @@ async function startSite(
   env: NodeJS.ProcessEnv,
 ): Promise<string> {
   const port = await freePort();
-  const site = launch(name, ["start", "-p", String(port), "-H", "127.0.0.1"], env);
+  // The host is `localhost`, not 127.0.0.1: Next.js writes 127.0.0.1 as localhost in the URL a proxy sees, and a rewrite
+  // from the proxy to a URL with another host than the server's own is sent out as a request to that host, which hangs.
+  const site = launch(name, ["start", "-p", String(port), "-H", "localhost"], env);
   sites.push(site);
 
-  const url = `http://127.0.0.1:${port}`;
+  const url = `http://localhost:${port}`;
   const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
     if (site.hasExited()) {
@@ -308,8 +361,9 @@ async function start() {
   const deadPort = await freePort();
   const hanging = await hangingDatabase();
   const stub = await stubDatabase();
+  const inProgress = await inProgressDatabase();
 
-  const [healthy, refused, hang, badKey, missingEnv, malformed] = await Promise.all([
+  const [healthy, refused, hang, badKey, missingEnv, malformed, running] = await Promise.all([
     startSite("healthy", siteEnv({ SUPABASE_URL: apiUrl, SUPABASE_SERVICE_ROLE_KEY: serviceKey })),
     startSite(
       "refused",
@@ -324,6 +378,10 @@ async function start() {
     startSite(
       "malformed",
       siteEnv({ SUPABASE_URL: `http://127.0.0.1:${stub.port}`, SUPABASE_SERVICE_ROLE_KEY: serviceKey }),
+    ),
+    startSite(
+      "inProgress",
+      siteEnv({ SUPABASE_URL: `http://127.0.0.1:${inProgress.port}`, SUPABASE_SERVICE_ROLE_KEY: serviceKey }),
     ),
   ]);
 
@@ -340,6 +398,7 @@ async function start() {
   process.env.TEST_SITE_BADKEY_URL = badKey;
   process.env.TEST_SITE_MISSINGENV_URL = missingEnv;
   process.env.TEST_SITE_MALFORMED_URL = malformed;
+  process.env.TEST_SITE_INPROGRESS_URL = running;
 
   return stopAll;
 }
