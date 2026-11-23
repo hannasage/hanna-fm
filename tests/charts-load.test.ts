@@ -22,11 +22,12 @@ const BUDGET_MS = 900;
 const MID_HISTORY_WEEK = "2025-09-01";
 
 const KEYS = {
-  track: { key: "track_uri", name: "track_name", where: "true" },
-  artist: { key: "artist_name", name: "artist_name", where: "true" },
+  track: { key: "track_uri", name: "track_name", artist: "artist_name", where: "true" },
+  artist: { key: "artist_name", name: "artist_name", artist: "null::text", where: "true" },
   album: {
     key: "md5(album_name) || '.' || md5(artist_name)",
     name: "album_name || ' - ' || artist_name",
+    artist: "artist_name",
     where: "album_name is not null",
   },
 } as const;
@@ -41,13 +42,13 @@ function independentChart(kind: keyof typeof KEYS): string {
   return `
     with qualifying as (
       select ended_at at time zone 'America/New_York' as local_time,
-             ${k.key} as item_key, ${k.name} as item_name, coalesce(ms_played, 0) as ms
+             ${k.key} as item_key, ${k.name} as item_name, ${k.artist} as item_artist, coalesce(ms_played, 0) as ms
         from public.plays
        where (ms_played is null or ms_played >= 30000) and ${k.where}
     ),
     weekly as (
       select (local_time::date - (extract(isodow from local_time)::int - 1)) as week,
-             item_key, max(item_name) as item_name, count(*) as plays, sum(ms) as ms
+             item_key, max(item_name) as item_name, max(item_artist) as item_artist, count(*) as plays, sum(ms) as ms
         from qualifying
        group by 1, 2
     ),
@@ -58,7 +59,7 @@ function independentChart(kind: keyof typeof KEYS): string {
              ) as rnk
         from weekly w
     )
-    select cur.rnk::int as rank, cur.item_key as key, cur.item_name as name, cur.plays::int as plays,
+    select cur.rnk::int as rank, cur.item_key as key, cur.item_name as name, cur.item_artist as artist, cur.plays::int as plays,
            round(cur.ms / 60000.0)::int as minutes,
            (select p.rnk::int from ranked p where p.item_key = cur.item_key and p.week = cur.week - 7) as last_week_rank,
            (select min(h.rnk)::int from ranked h where h.item_key = cur.item_key and h.week <= cur.week) as peak_rank,
@@ -153,19 +154,19 @@ describe(`GET /api/charts/weekly with ${FULL.toLocaleString("en-US")} plays`, ()
     const first = await (await fetch(`${env.sites.healthy}/api/charts/weekly?week=2026-04-06`)).json();
 
     expect((first as Chart).rows).toEqual([
-      { rank: 1, key: "spotify:track:synthetic-known-a", name: "Track known-a", plays: 5, minutes: 5, last_week_rank: null, peak_rank: 1, weeks_on_chart: 1 },
-      { rank: 2, key: "spotify:track:synthetic-known-c", name: "Track known-c", plays: 3, minutes: 6, last_week_rank: null, peak_rank: 2, weeks_on_chart: 1 },
-      { rank: 3, key: "spotify:track:synthetic-known-b", name: "Track known-b", plays: 3, minutes: 3, last_week_rank: null, peak_rank: 3, weeks_on_chart: 1 },
+      { rank: 1, key: "spotify:track:synthetic-known-a", name: "Track known-a", artist: "Artist known-a", plays: 5, minutes: 5, last_week_rank: null, peak_rank: 1, weeks_on_chart: 1 },
+      { rank: 2, key: "spotify:track:synthetic-known-c", name: "Track known-c", artist: "Artist known-c", plays: 3, minutes: 6, last_week_rank: null, peak_rank: 2, weeks_on_chart: 1 },
+      { rank: 3, key: "spotify:track:synthetic-known-b", name: "Track known-b", artist: "Artist known-b", plays: 3, minutes: 3, last_week_rank: null, peak_rank: 3, weeks_on_chart: 1 },
     ]);
     expect((second as Chart).rows).toEqual([
-      { rank: 1, key: "spotify:track:synthetic-known-b", name: "Track known-b", plays: 6, minutes: 6, last_week_rank: 3, peak_rank: 1, weeks_on_chart: 2 },
-      { rank: 2, key: "spotify:track:synthetic-known-d", name: "Track known-d", plays: 2, minutes: 3, last_week_rank: null, peak_rank: 2, weeks_on_chart: 1 },
-      { rank: 3, key: "spotify:track:synthetic-known-a", name: "Track known-a", plays: 2, minutes: 2, last_week_rank: 1, peak_rank: 1, weeks_on_chart: 2 },
+      { rank: 1, key: "spotify:track:synthetic-known-b", name: "Track known-b", artist: "Artist known-b", plays: 6, minutes: 6, last_week_rank: 3, peak_rank: 1, weeks_on_chart: 2 },
+      { rank: 2, key: "spotify:track:synthetic-known-d", name: "Track known-d", artist: "Artist known-d", plays: 2, minutes: 3, last_week_rank: null, peak_rank: 2, weeks_on_chart: 1 },
+      { rank: 3, key: "spotify:track:synthetic-known-a", name: "Track known-a", artist: "Artist known-a", plays: 2, minutes: 2, last_week_rank: 1, peak_rank: 1, weeks_on_chart: 2 },
     ]);
     expect((third as Chart).rows).toEqual([
-      { rank: 1, key: "spotify:track:synthetic-known-a", name: "Track known-a", plays: 7, minutes: 7, last_week_rank: 3, peak_rank: 1, weeks_on_chart: 3 },
-      { rank: 2, key: "spotify:track:synthetic-known-d", name: "Track known-d", plays: 2, minutes: 1, last_week_rank: 2, peak_rank: 2, weeks_on_chart: 2 },
-      { rank: 3, key: "spotify:track:synthetic-known-b", name: "Track known-b", plays: 1, minutes: 1, last_week_rank: 1, peak_rank: 1, weeks_on_chart: 3 },
+      { rank: 1, key: "spotify:track:synthetic-known-a", name: "Track known-a", artist: "Artist known-a", plays: 7, minutes: 7, last_week_rank: 3, peak_rank: 1, weeks_on_chart: 3 },
+      { rank: 2, key: "spotify:track:synthetic-known-d", name: "Track known-d", artist: "Artist known-d", plays: 2, minutes: 1, last_week_rank: 2, peak_rank: 2, weeks_on_chart: 2 },
+      { rank: 3, key: "spotify:track:synthetic-known-b", name: "Track known-b", artist: "Artist known-b", plays: 1, minutes: 1, last_week_rank: 1, peak_rank: 1, weeks_on_chart: 3 },
     ]);
   });
 

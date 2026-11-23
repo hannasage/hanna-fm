@@ -115,6 +115,8 @@ export type ChartRow = {
   rank: number;
   key: string;
   name: string;
+  /** The artist name of a track or album row. Null on an artist row, which is the artist. */
+  artist: string | null;
   plays: number;
   /** Whole minutes. A row never shows the exact length of one play. */
   minutes: number;
@@ -139,10 +141,15 @@ export function toChartRow(raw: unknown): ChartRow {
   if (typeof row.key !== "string" || typeof row.name !== "string") {
     throw new ChartShapeError();
   }
+  // A missing artist is a shape error, not a null: the database always sends the field.
+  if (row.artist !== null && typeof row.artist !== "string") {
+    throw new ChartShapeError();
+  }
   return {
     rank: whole(row.rank),
     key: row.key,
     name: row.name,
+    artist: row.artist,
     plays: whole(row.plays),
     minutes: whole(row.minutes),
     last_week_rank: row.last_week_rank === null ? null : whole(row.last_week_rank),
