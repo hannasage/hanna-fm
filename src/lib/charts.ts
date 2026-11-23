@@ -1,19 +1,22 @@
+import { ChartShapeError } from "./failure-reason";
+
 /**
  * Rules for the weekly chart inputs. Nothing here touches the database.
- * The week and play rules live in the SQL function `chart_weekly`.
+ * The week, play and delay rules live in the SQL functions `chart_weekly`, `chart_bounds` and `chart_cutoff`.
  */
 
-/** Plays newer than this many hours never appear in public data. The one setting for the delay. */
-export const PUBLIC_DELAY_HOURS = 24;
+/**
+ * The one setting for the public delay. Plays from the last whole Eastern day or more are hidden:
+ * the database snaps the cutoff to the start of the Eastern day this many days back, and never closer
+ * than 24 hours. A chart number therefore changes only at Eastern midnight.
+ */
+export const PUBLIC_DELAY_DAYS = 1;
 
 export const CHART_KINDS = ["track", "artist", "album"] as const;
 export type ChartKind = (typeof CHART_KINDS)[number];
 
 export const DEFAULT_CHART_LIMIT = 25;
 export const MAX_CHART_LIMIT = 100;
-
-const CHART_TIME_ZONE = "America/New_York";
-const DAY_MS = 86_400_000;
 
 export type ChartQuery = {
   /** A Monday, as YYYY-MM-DD, or null when the caller did not ask for one. */
@@ -22,11 +25,6 @@ export type ChartQuery = {
   limit: number;
 };
 
-/** The newest play time the public may see, given the clock. */
-export function publicCutoff(now: Date = new Date()): Date {
-  return new Date(now.getTime() - PUBLIC_DELAY_HOURS * 3_600_000);
-}
-
 function once(params: URLSearchParams, name: string): string | null | "invalid" {
   const values = params.getAll(name);
   if (values.length === 0) return null;
@@ -34,12 +32,16 @@ function once(params: URLSearchParams, name: string): string | null | "invalid" 
   return values[0]!;
 }
 
-/** True for a real calendar date written YYYY-MM-DD that falls on a Monday. */
-function isMonday(text: string): boolean {
+/** True for a real calendar date written YYYY-MM-DD. */
+function isIsoDate(text: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return false;
   const [year, month, day] = text.split("-").map(Number) as [number, number, number];
-  const date = new Date(Date.UTC(year, month - 1, day));
-  return date.toISOString().slice(0, 10) === text && date.getUTCDay() === 1;
+  return new Date(Date.UTC(year, month - 1, day)).toISOString().slice(0, 10) === text;
+}
+
+/** True for a real calendar date written YYYY-MM-DD that falls on a Monday. */
+function isMonday(text: string): boolean {
+  return isIsoDate(text) && new Date(`${text}T00:00:00Z`).getUTCDay() === 1;
 }
 
 /**
@@ -67,22 +69,39 @@ export function parseChartQuery(params: URLSearchParams): ChartQuery | null {
   };
 }
 
-/** The Monday, in New York, of the chart week that holds a moment. */
-export function chartWeekStart(moment: Date): string {
-  const parts = Object.fromEntries(
-    new Intl.DateTimeFormat("en-US", {
-      timeZone: CHART_TIME_ZONE,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      weekday: "short",
-    })
-      .formatToParts(moment)
-      .map((part) => [part.type, part.value]),
-  ) as Record<string, string>;
-  const daysSinceMonday = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].indexOf(parts.weekday!);
-  const localMidnight = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day));
-  return new Date(localMidnight - daysSinceMonday * DAY_MS).toISOString().slice(0, 10);
+/** What the database says about the weeks it holds. */
+export type ChartBounds = {
+  /** The Monday of the first stored play, or null when nothing is stored. */
+  firstWeek: string | null;
+  /** The Monday of the latest week with a play the chart would count, or null when none qualifies. */
+  latestWeek: string | null;
+  /** The Monday of the current New York week. */
+  currentWeek: string;
+};
+
+/**
+ * Reads the one row `chart_bounds` returns. A null latest week is a real answer (no play qualifies).
+ * A latest week that is missing, or not a date, is not, and throws.
+ */
+export function toChartBounds(data: unknown): ChartBounds {
+  if (!Array.isArray(data) || data.length !== 1 || typeof data[0] !== "object" || data[0] === null) {
+    throw new ChartShapeError();
+  }
+  const row = data[0] as Record<string, unknown>;
+  const date = (value: unknown): string => {
+    if (typeof value !== "string" || !isIsoDate(value)) throw new ChartShapeError();
+    return value;
+  };
+  const currentWeek = date(row.current_week);
+  const firstWeek = row.first_week === null ? null : date(row.first_week);
+  const latestWeek = row.latest_week === null ? null : date(row.latest_week);
+  if (firstWeek === null && latestWeek !== null) throw new ChartShapeError();
+  return { firstWeek, latestWeek, currentWeek };
+}
+
+/** True when a week the caller named lies between the first stored week and the current week. */
+export function weekInRange(week: string, bounds: ChartBounds): boolean {
+  return bounds.firstWeek !== null && week >= bounds.firstWeek && week <= bounds.currentWeek;
 }
 
 /** One line of a chart. Only these fields leave the site. */
@@ -91,6 +110,7 @@ export type ChartRow = {
   key: string;
   name: string;
   plays: number;
+  /** Whole minutes. A row never shows the exact length of one play. */
   minutes: number;
   last_week_rank: number | null;
   peak_rank: number;
@@ -99,7 +119,7 @@ export type ChartRow = {
 
 function whole(value: unknown): number {
   if (typeof value !== "number" || !Number.isInteger(value)) {
-    throw new TypeError("The database returned a chart row that is not usable.");
+    throw new ChartShapeError();
   }
   return value;
 }
@@ -107,20 +127,26 @@ function whole(value: unknown): number {
 /** Copies a database row into a ChartRow. Any field not listed here is dropped. */
 export function toChartRow(raw: unknown): ChartRow {
   if (typeof raw !== "object" || raw === null) {
-    throw new TypeError("The database returned a chart row that is not usable.");
+    throw new ChartShapeError();
   }
   const row = raw as Record<string, unknown>;
-  if (typeof row.key !== "string" || typeof row.name !== "string" || typeof row.minutes !== "number") {
-    throw new TypeError("The database returned a chart row that is not usable.");
+  if (typeof row.key !== "string" || typeof row.name !== "string") {
+    throw new ChartShapeError();
   }
   return {
     rank: whole(row.rank),
     key: row.key,
     name: row.name,
     plays: whole(row.plays),
-    minutes: row.minutes,
+    minutes: whole(row.minutes),
     last_week_rank: row.last_week_rank === null ? null : whole(row.last_week_rank),
     peak_rank: whole(row.peak_rank),
     weeks_on_chart: whole(row.weeks_on_chart),
   };
+}
+
+/** Copies every row of a chart. Anything that is not a list is a shape error. */
+export function toChartRows(data: unknown): ChartRow[] {
+  if (!Array.isArray(data)) throw new ChartShapeError();
+  return data.map(toChartRow);
 }

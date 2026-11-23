@@ -1,87 +1,24 @@
-import { Client } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  albumKey,
+  clearPlays,
+  insertPlays,
+  play,
+  plays,
+  withDb,
+  type Chart,
+  type Play,
+} from "./support/chart-data";
 import { readSiteLog, testEnv, waitForSiteLog, type SiteName } from "./support/env";
 
 /**
- * Every row here is synthetic. Rows go in with the service role (or, for the 200,000
- * row test, straight into the local database) and come out again after each test.
+ * The HTTP boundary of the site against the local database. Every row is synthetic.
+ * Dates in fixtures are written out, never worked out by the code under test.
  * Only the plays test files commit rows to plays, and the files run one at a time.
  */
 const env = testEnv();
 
-type Play = {
-  track_uri: string;
-  track_name: string;
-  artist_name: string;
-  album_name: string | null;
-  ended_at: string;
-  ms_played: number | null;
-  source: "export" | "poll";
-};
-
-type ChartRow = {
-  rank: number;
-  key: string;
-  name: string;
-  plays: number;
-  minutes: number;
-  last_week_rank: number | null;
-  peak_rank: number;
-  weeks_on_chart: number;
-};
-
-type Chart = { week_start: string; kind: string; rows: ChartRow[] };
-
-const FULL = 200_000;
-
-function play(track: string, endedAt: string, overrides: Partial<Play> = {}): Play {
-  return {
-    track_uri: `spotify:track:synthetic-${track}`,
-    track_name: `Track ${track}`,
-    artist_name: `Artist ${track}`,
-    album_name: `Album ${track}`,
-    ended_at: new Date(endedAt).toISOString(),
-    ms_played: 200_000,
-    source: "export",
-    ...overrides,
-  };
-}
-
-/** `n` plays of one track, one minute apart from the start time, so no two clash. */
-function plays(track: string, n: number, startIso: string, overrides: Partial<Play> = {}): Play[] {
-  const start = new Date(startIso).getTime();
-  return Array.from({ length: n }, (_, i) =>
-    play(track, new Date(start + i * 60_000).toISOString(), overrides),
-  );
-}
-
-function serviceHeaders(extra: Record<string, string> = {}) {
-  return {
-    apikey: env.serviceRoleKey,
-    Authorization: `Bearer ${env.serviceRoleKey}`,
-    "Content-Type": "application/json",
-    ...extra,
-  };
-}
-
-async function insertPlays(rows: Play[]) {
-  for (let i = 0; i < rows.length; i += 500) {
-    const res = await fetch(`${env.apiUrl}/rest/v1/plays`, {
-      method: "POST",
-      headers: serviceHeaders(),
-      body: JSON.stringify(rows.slice(i, i + 500)),
-    });
-    expect(res.status).toBe(201);
-  }
-}
-
-async function clearPlays() {
-  const res = await fetch(`${env.apiUrl}/rest/v1/plays?id=gte.0`, {
-    method: "DELETE",
-    headers: serviceHeaders(),
-  });
-  expect(res.status).toBe(204);
-}
+const CACHEABLE = "public, s-maxage=300, stale-while-revalidate=600";
 
 async function getChart(query = "", site: SiteName = "healthy") {
   return fetch(`${env.sites[site]}/api/charts/weekly${query ? `?${query}` : ""}`);
@@ -93,25 +30,22 @@ async function chart(query: string): Promise<Chart> {
   return (await res.json()) as Chart;
 }
 
-/** The Monday, in New York, of the week that holds a moment. Read from the clock, not from the site. */
-function newYorkMonday(moment: Date): string {
-  const parts = Object.fromEntries(
-    new Intl.DateTimeFormat("en-US", {
-      timeZone: "America/New_York",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      weekday: "short",
-    })
-      .formatToParts(moment)
-      .map((p) => [p.type, p.value]),
-  );
-  const back = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].indexOf(parts.weekday!);
-  const local = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day));
-  return new Date(local - back * 86_400_000).toISOString().slice(0, 10);
+/**
+ * A Monday in New York time, `weeksFromNow` chart weeks from the current one.
+ * The database reads its own clock and finds the Monday by day-of-week arithmetic, which is a
+ * different route from the SQL function's week rule. Only the edge tests need it.
+ */
+async function newYorkMonday(weeksFromNow: number): Promise<string> {
+  return withDb(async (db) => {
+    const result = await db.query<{ monday: string }>(
+      `select to_char(d - (extract(isodow from d)::int - 1) + 7 * $1::int, 'YYYY-MM-DD') as monday
+         from (select (now() at time zone 'America/New_York')::date as d) as today`,
+      [weeksFromNow],
+    );
+    return result.rows[0]!.monday;
+  });
 }
 
-/** The rows, cut down to the fields a test compares. */
 function names(c: Chart): string[] {
   return c.rows.map((r) => r.name);
 }
@@ -145,10 +79,11 @@ describe("GET /api/charts/weekly: ranks, last week, peak and weeks on chart", ()
 
     expect(c.week_start).toBe("2026-02-02");
     expect(c.kind).toBe("track");
+    // Every play is 200,000 ms: 3 plays = 10 minutes, 2 plays = 6.67 (shown 7), 1 play = 3.33 (shown 3).
     expect(c.rows).toEqual([
       { rank: 1, key: "spotify:track:synthetic-a", name: "Track a", plays: 3, minutes: 10, last_week_rank: null, peak_rank: 1, weeks_on_chart: 1 },
-      { rank: 2, key: "spotify:track:synthetic-b", name: "Track b", plays: 2, minutes: 6.7, last_week_rank: null, peak_rank: 2, weeks_on_chart: 1 },
-      { rank: 3, key: "spotify:track:synthetic-c", name: "Track c", plays: 1, minutes: 3.3, last_week_rank: null, peak_rank: 3, weeks_on_chart: 1 },
+      { rank: 2, key: "spotify:track:synthetic-b", name: "Track b", plays: 2, minutes: 7, last_week_rank: null, peak_rank: 2, weeks_on_chart: 1 },
+      { rank: 3, key: "spotify:track:synthetic-c", name: "Track c", plays: 1, minutes: 3, last_week_rank: null, peak_rank: 3, weeks_on_chart: 1 },
     ]);
   });
 
@@ -192,31 +127,175 @@ describe("GET /api/charts/weekly: ranks, last week, peak and weeks on chart", ()
     expect(next.rows[1]).toMatchObject({ name: "Track a", last_week_rank: 2, peak_rank: 1, weeks_on_chart: 3 });
   });
 
-  it("without a week, shows the latest week that has plays", async () => {
-    await loadThreeWeeks();
-    const c = await chart("");
-
-    expect(c.week_start).toBe("2026-02-16");
-    expect(names(c)).toEqual(["Track c", "Track a", "Track b"]);
-  });
-
-  it("answers an empty week with an empty list", async () => {
+  it("answers an empty week inside the stored range with an empty list", async () => {
     await loadThreeWeeks();
     const c = await chart("week=2026-03-02");
 
     expect(c).toEqual({ week_start: "2026-03-02", kind: "track", rows: [] });
   });
+});
 
-  it("answers with an empty list and the current Monday when no play is stored", async () => {
+describe("GET /api/charts/weekly: the default week", () => {
+  async function loadThreeWeeks() {
+    await insertPlays([
+      ...plays("a", 3, "2026-02-03T12:00:00Z"),
+      ...plays("c", 3, "2026-02-17T12:00:00Z"),
+      ...plays("a", 2, "2026-02-17T13:00:00Z"),
+    ]);
+  }
+
+  it("shows the latest week that has plays", async () => {
+    await loadThreeWeeks();
     const c = await chart("");
 
-    expect(c.rows).toEqual([]);
-    expect(c.week_start).toBe(newYorkMonday(new Date()));
+    expect(c.week_start).toBe("2026-02-16");
+    expect(names(c)).toEqual(["Track c", "Track a"]);
   });
 
-  it("sends no-store, so a new play shows at once", async () => {
+  it("answers no_data, with no week, when no play is stored", async () => {
     const res = await getChart("");
-    expect(res.headers.get("cache-control")).toContain("no-store");
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ week_start: null, kind: "track", rows: [], status: "no_data" });
+  });
+
+  it("keeps the kind in a no_data answer", async () => {
+    const res = await getChart("kind=artist");
+
+    expect(await res.json()).toEqual({ week_start: null, kind: "artist", rows: [], status: "no_data" });
+  });
+
+  it("answers no_data when every stored play is under 30 seconds", async () => {
+    await insertPlays([play("short", "2026-02-03T12:00:00Z", { ms_played: 29_999 })]);
+
+    expect(await (await getChart("")).json()).toEqual({ week_start: null, kind: "track", rows: [], status: "no_data" });
+  });
+
+  it("answers no_data when every stored play is inside the public delay", async () => {
+    await insertPlays([play("fresh", new Date(Date.now() - 3_600_000).toISOString())]);
+
+    expect(await (await getChart("")).json()).toEqual({ week_start: null, kind: "track", rows: [], status: "no_data" });
+  });
+
+  it("skips a newer week that holds only plays under 30 seconds", async () => {
+    await insertPlays([
+      play("real", "2026-02-03T12:00:00Z"),
+      play("short", "2026-02-17T12:00:00Z", { ms_played: 5_000 }),
+    ]);
+    const c = await chart("");
+
+    expect(c.week_start).toBe("2026-02-02");
+    expect(names(c)).toEqual(["Track real"]);
+  });
+
+  it("counts a poll row with no ms_played when it picks the latest week", async () => {
+    await insertPlays([
+      play("real", "2026-02-03T12:00:00Z"),
+      play("poll", "2026-02-17T12:00:00Z", { source: "poll", ms_played: null }),
+    ]);
+
+    expect((await chart("")).week_start).toBe("2026-02-16");
+  });
+
+  it("picks the latest week that has an album when the kind is album", async () => {
+    await insertPlays([
+      play("album", "2026-02-03T12:00:00Z"),
+      play("single", "2026-02-17T12:00:00Z", { album_name: null }),
+    ]);
+
+    expect((await chart("kind=album")).week_start).toBe("2026-02-02");
+    expect((await chart("kind=track")).week_start).toBe("2026-02-16");
+  });
+
+  it("answers no_data for albums when no stored play has an album", async () => {
+    await insertPlays([play("single", "2026-02-03T12:00:00Z", { album_name: null })]);
+
+    expect(await (await getChart("kind=album")).json()).toEqual({
+      week_start: null,
+      kind: "album",
+      rows: [],
+      status: "no_data",
+    });
+    expect((await chart("kind=track")).week_start).toBe("2026-02-02");
+  });
+
+  it("never picks a week that holds only recent plays", async () => {
+    await insertPlays([play("older", "2026-02-03T12:00:00Z"), play("fresh", new Date(Date.now() - 7_200_000).toISOString())]);
+    const c = await chart("");
+
+    expect(c.week_start).toBe("2026-02-02");
+    expect(names(c)).toEqual(["Track older"]);
+  });
+});
+
+describe("GET /api/charts/weekly: caching", () => {
+  it("lets a shared cache keep a chart for five minutes", async () => {
+    await insertPlays([play("a", "2026-02-03T12:00:00Z")]);
+    const res = await getChart("week=2026-02-02");
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe(CACHEABLE);
+  });
+
+  it("caches the default week and a no_data answer the same way", async () => {
+    expect((await getChart("")).headers.get("cache-control")).toBe(CACHEABLE);
+    await insertPlays([play("a", "2026-02-03T12:00:00Z")]);
+    expect((await getChart("")).headers.get("cache-control")).toBe(CACHEABLE);
+  });
+
+  it("never caches a bad request", async () => {
+    const res = await getChart("week=abc");
+
+    expect(res.status).toBe(400);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("never caches a week out of range", async () => {
+    await insertPlays([play("a", "2026-02-03T12:00:00Z")]);
+    const res = await getChart("week=2026-01-26");
+
+    expect(res.status).toBe(400);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+  });
+});
+
+describe("GET /api/charts/weekly: the range of weeks", () => {
+  beforeEach(async () => {
+    await insertPlays([play("a", "2026-02-04T12:00:00Z")]);
+  });
+
+  it("accepts the Monday of the first stored play, and not the Monday before", async () => {
+    expect((await getChart("week=2026-02-02")).status).toBe(200);
+
+    const before = await getChart("week=2026-01-26");
+    expect(before.status).toBe(400);
+    expect(await before.json()).toEqual({ status: "bad_request" });
+  });
+
+  it("accepts the current New York Monday, and not the next one", async () => {
+    expect((await getChart(`week=${await newYorkMonday(0)}`)).status).toBe(200);
+
+    const next = await getChart(`week=${await newYorkMonday(1)}`);
+    expect(next.status).toBe(400);
+    expect(await next.json()).toEqual({ status: "bad_request" });
+  });
+
+  it("refuses a Monday far in the future", async () => {
+    expect((await getChart("week=2099-01-05")).status).toBe(400);
+  });
+
+  it("measures the first week from a play inside the delay too, because the week is all it shows", async () => {
+    await clearPlays();
+    await insertPlays([play("fresh", new Date(Date.now() - 3_600_000).toISOString())]);
+
+    expect((await getChart(`week=${await newYorkMonday(0)}`)).status).toBe(200);
+    expect((await getChart(`week=${await newYorkMonday(-1)}`)).status).toBe(400);
+  });
+
+  it("refuses every explicit week when no play is stored", async () => {
+    await clearPlays();
+
+    expect((await getChart("week=2026-02-02")).status).toBe(400);
   });
 });
 
@@ -228,10 +307,7 @@ describe("GET /api/charts/weekly: the Eastern chart week", () => {
     ["the week ending at spring forward", "2026-03-09T03:59:59Z", "2026-03-09T04:00:00Z", "2026-03-02", "2026-03-09"],
     ["the week ending at fall back", "2026-11-02T04:59:59Z", "2026-11-02T05:00:00Z", "2026-10-26", "2026-11-02"],
   ])("puts Sunday night and Monday morning in the right weeks, in %s", async (_label, sunday, monday, weekBefore, weekAfter) => {
-    await insertPlays([
-      play("sunday", sunday),
-      play("monday", monday),
-    ]);
+    await insertPlays([play("sunday", sunday), play("monday", monday)]);
 
     expect(names(await chart(`week=${weekBefore}`))).toEqual(["Track sunday"]);
     expect(names(await chart(`week=${weekAfter}`))).toEqual(["Track monday"]);
@@ -254,11 +330,8 @@ describe("GET /api/charts/weekly: the Eastern chart week", () => {
   });
 
   it("counts every day of a week that holds a clock change", async () => {
-    // Week of Monday 2026-11-02 to Sunday 2026-11-08 follows fall back; Monday 10-26 to Sunday 11-01 holds it.
-    await insertPlays([
-      play("mon", "2026-10-26T04:00:00Z"),
-      play("sun", "2026-11-02T04:59:59Z"),
-    ]);
+    // Monday 2026-10-26 to Sunday 2026-11-01 holds the fall back of 2026-11-01.
+    await insertPlays([play("mon", "2026-10-26T04:00:00Z"), play("sun", "2026-11-02T04:59:59Z")]);
 
     expect(names(await chart("week=2026-10-26"))).toEqual(["Track mon", "Track sun"]);
   });
@@ -289,21 +362,91 @@ describe("GET /api/charts/weekly: ranking rules", () => {
     ]);
   });
 
-  it("breaks a tie in plays and minutes by name, so the order is stable", async () => {
+  it("ranks by the exact minutes, so two items that show the same whole minutes still have an order", async () => {
+    // Both show 2 minutes (122,000 and 124,000 ms). The one that sorts last by name has more time.
     await insertPlays([
-      ...plays("c", 1, "2026-02-03T12:00:00Z"),
-      ...plays("a", 1, "2026-02-03T13:00:00Z"),
-      ...plays("b", 1, "2026-02-03T14:00:00Z"),
+      ...plays("aa", 2, "2026-02-03T12:00:00Z", { ms_played: 61_000 }),
+      ...plays("zz", 2, "2026-02-03T13:00:00Z", { ms_played: 62_000 }),
     ]);
+    const c = await chart(week);
 
-    for (let i = 0; i < 3; i++) {
-      expect(names(await chart(week))).toEqual(["Track a", "Track b", "Track c"]);
+    expect(c.rows.map((r) => [r.name, r.minutes])).toEqual([
+      ["Track zz", 2],
+      ["Track aa", 2],
+    ]);
+  });
+
+  it("shows whole minutes, so no row gives away the length of one play", async () => {
+    await insertPlays([play("solo", "2026-02-03T12:00:00Z", { ms_played: 187_654 })]);
+    const res = await getChart(week);
+    const text = await res.text();
+    const row = (JSON.parse(text) as Chart).rows[0]!;
+
+    expect(row.minutes).toBe(3);
+    expect(Number.isInteger(row.minutes)).toBe(true);
+    expect(/187|3\.1/.test(text)).toBe(false);
+  });
+
+  it("rounds minutes to the nearest whole minute", async () => {
+    await insertPlays([
+      play("down", "2026-02-03T12:00:00Z", { ms_played: 89_999 }),
+      play("up", "2026-02-03T13:00:00Z", { ms_played: 90_000 }),
+    ]);
+    const c = await chart(week);
+
+    expect(Object.fromEntries(c.rows.map((r) => [r.name, r.minutes]))).toEqual({
+      "Track down": 1,
+      "Track up": 2,
+    });
+  });
+
+  it("breaks a tie in plays and minutes by name, ignoring case, then by exact name, then by key", async () => {
+    // One play each, all the same length, so every item ties on plays and minutes.
+    // Expected order, written by hand: Alpha and alpha tie on lower case, and "Alpha" sorts first;
+    // the two "echo" tracks tie on name too, so the key (the track URI) decides.
+    const tracks: [string, string][] = [
+      ["spotify:track:synthetic-6", "echo"],
+      ["spotify:track:synthetic-1", "Alpha"],
+      ["spotify:track:synthetic-2", "alpha"],
+      ["spotify:track:synthetic-3", "Bravo"],
+      ["spotify:track:synthetic-4", "charlie"],
+      ["spotify:track:synthetic-5", "Delta"],
+      ["spotify:track:synthetic-7", "echo"],
+    ];
+    const expected = [
+      "spotify:track:synthetic-1",
+      "spotify:track:synthetic-2",
+      "spotify:track:synthetic-3",
+      "spotify:track:synthetic-4",
+      "spotify:track:synthetic-5",
+      "spotify:track:synthetic-6",
+      "spotify:track:synthetic-7",
+    ];
+    const rows = tracks.map(([uri, name], i) =>
+      play("tie", `2026-02-03T12:0${i}:00Z`, { track_uri: uri, track_name: name }),
+    );
+
+    // The same rows go in in five different orders. The ranks must not follow insert order.
+    const orders = [
+      [0, 1, 2, 3, 4, 5, 6],
+      [6, 5, 4, 3, 2, 1, 0],
+      [3, 0, 6, 1, 5, 2, 4],
+      [2, 4, 0, 6, 1, 3, 5],
+      [5, 6, 1, 4, 0, 2, 3],
+    ];
+    for (const order of orders) {
+      await clearPlays();
+      await insertPlays(order.map((i) => rows[i]!));
+      const c = await chart(week);
+
+      expect(c.rows.map((r) => r.key), `insert order ${order.join("")}`).toEqual(expected);
+      expect(c.rows.map((r) => r.rank)).toEqual([1, 2, 3, 4, 5, 6, 7]);
     }
   });
 
   it("sums minutes over rows that have ms_played only, and counts a poll row with none", async () => {
     // Both tracks have two plays. The poll track holds 1 minute of known play time,
-    // the export track 1.5 minutes. A null counted as a full play would change this.
+    // the export track 1.5 minutes (shown 2). A null counted as a full play would change this.
     await insertPlays([
       play("poll", "2026-02-03T12:00:00Z", { source: "poll", ms_played: null }),
       play("poll", "2026-02-03T12:05:00Z", { source: "poll", ms_played: 60_000 }),
@@ -312,7 +455,7 @@ describe("GET /api/charts/weekly: ranking rules", () => {
     const c = await chart(week);
 
     expect(c.rows.map((r) => [r.name, r.plays, r.minutes])).toEqual([
-      ["Track export", 2, 1.5],
+      ["Track export", 2, 2],
       ["Track poll", 2, 1],
     ]);
   });
@@ -334,18 +477,28 @@ describe("GET /api/charts/weekly: ranking rules", () => {
     ]);
     const c = await chart(week);
 
-    expect(c.rows.map((r) => [r.name, r.plays, r.minutes])).toEqual([["Track edge", 1, 0.5]]);
+    expect(c.rows.map((r) => [r.name, r.plays, r.minutes])).toEqual([["Track edge", 1, 1]]);
   });
 
-  it("does not let a short play lift a peak or a weeks on chart", async () => {
+  it("does not let short plays lift a peak, a rank, a play count or a weeks on chart", async () => {
+    // Week 1: Y 2 plays, X 1 play -> X is rank 2.
+    // Week 2: Y 2 plays, X 1 play and 3 short plays. Counted, X would have 4 plays and rank 1.
+    // Week 3: X has 5 short plays and nothing else, so it is not on that chart at all.
     await insertPlays([
-      play("x", "2026-02-03T12:00:00Z"),
-      play("x", "2026-02-10T12:00:00Z", { ms_played: 10_000 }),
+      ...plays("y", 2, "2026-02-03T12:00:00Z"),
+      play("x", "2026-02-03T13:00:00Z"),
+      ...plays("y", 2, "2026-02-10T12:00:00Z"),
+      play("x", "2026-02-10T13:00:00Z"),
+      ...plays("x", 3, "2026-02-10T14:00:00Z", { ms_played: 10_000 }),
+      ...plays("x", 5, "2026-02-17T12:00:00Z", { ms_played: 10_000 }),
+      ...plays("y", 1, "2026-02-17T13:00:00Z"),
     ]);
-    const c = await chart("week=2026-02-09");
+    const week2 = await chart("week=2026-02-09");
+    const x2 = week2.rows.find((r) => r.name === "Track x");
 
-    expect(c.rows).toEqual([]);
-    expect((await chart(week)).rows[0]).toMatchObject({ weeks_on_chart: 1 });
+    expect(x2).toMatchObject({ plays: 1, rank: 2, last_week_rank: 2, peak_rank: 2, weeks_on_chart: 2 });
+    expect(week2.rows[0]).toMatchObject({ name: "Track y", plays: 2, rank: 1 });
+    expect(names(await chart("week=2026-02-16"))).toEqual(["Track y"]);
   });
 });
 
@@ -380,17 +533,36 @@ describe("GET /api/charts/weekly: kind", () => {
     ]);
   });
 
-  it("groups by album and artist, so two artists with one album name stay apart", async () => {
+  it("groups by album and artist, shows Album - Artist, and keeps two artists with one album name apart", async () => {
     await loadKinds();
     const c = await chart("week=2026-02-02&kind=album");
 
     expect(c.kind).toBe("album");
-    expect(c.rows.map((r) => [r.key, r.plays])).toEqual([
+    expect(c.rows.map((r) => [r.name, r.plays])).toEqual([
       ["Album One - Artist One", 2],
       ["Album One - Artist Two", 1],
       ["Album Two - Artist One", 1],
     ]);
-    expect(new Set(c.rows.map((r) => r.key)).size).toBe(3);
+    expect(c.rows.map((r) => r.key)).toEqual([
+      albumKey("Album One", "Artist One"),
+      albumKey("Album One", "Artist Two"),
+      albumKey("Album Two", "Artist One"),
+    ]);
+  });
+
+  it("gives two albums whose joined names read alike different keys", async () => {
+    // "A - B" by "C" and "A" by "B - C" both display as "A - B - C". They are two albums.
+    await insertPlays([
+      play("one", "2026-02-03T12:00:00Z", { album_name: "A - B", artist_name: "C" }),
+      play("two", "2026-02-03T12:10:00Z", { album_name: "A", artist_name: "B - C" }),
+      play("three", "2026-02-03T12:20:00Z", { album_name: "A\u001f", artist_name: "B" }),
+      play("four", "2026-02-03T12:30:00Z", { album_name: "A", artist_name: "\u001fB" }),
+    ]);
+    const c = await chart("week=2026-02-02&kind=album");
+
+    expect(c.rows).toHaveLength(4);
+    expect(new Set(c.rows.map((r) => r.key)).size).toBe(4);
+    expect(c.rows.every((r) => r.plays === 1)).toBe(true);
   });
 
   it("leaves plays with no album out of an album chart", async () => {
@@ -442,33 +614,27 @@ describe("GET /api/charts/weekly: limit", () => {
   });
 });
 
-describe("GET /api/charts/weekly: the public delay", () => {
-  const HOUR = 3_600_000;
-  const ago = (hours: number) => new Date(Date.now() - hours * HOUR).toISOString();
+describe("GET /api/charts/weekly: the public delay, over HTTP", () => {
+  // The exact snap to Eastern midnight is tested in charts-function.test.ts with a fixed clock.
+  // Here the site reads the real clock, so only plays that are certainly old or certainly new are used:
+  // the cutoff is always between 24 and 48 hours before now.
+  const ago = (hours: number) => new Date(Date.now() - hours * 3_600_000).toISOString();
 
-  it("never shows a play newer than 24 hours, and counts the older ones", async () => {
+  it("never shows a play newer than 24 hours, and counts the ones older than 72 hours", async () => {
     await insertPlays([
-      play("old", ago(25)),
-      play("old", ago(23)),
-      play("fresh", ago(23.5)),
+      play("old", ago(80)),
+      play("old", ago(73)),
+      play("fresh", ago(23)),
       play("fresh", ago(1)),
     ]);
     const c = await chart("");
 
-    expect(c.rows.map((r) => [r.name, r.plays])).toEqual([["Track old", 1]]);
-  });
-
-  it("never picks a week that holds only recent plays", async () => {
-    await insertPlays([play("older", "2026-02-03T12:00:00Z"), play("fresh", ago(2))]);
-    const c = await chart("");
-
-    expect(c.week_start).toBe("2026-02-02");
-    expect(names(c)).toEqual(["Track older"]);
+    expect(c.rows.map((r) => [r.name, r.plays])).toEqual([["Track old", 2]]);
   });
 
   it("hides a recent play from a named week too", async () => {
     await insertPlays([play("fresh", ago(2))]);
-    const c = await chart(`week=${newYorkMonday(new Date(Date.now() - 2 * HOUR))}`);
+    const c = await chart(`week=${await newYorkMonday(0)}`);
 
     expect(c.rows).toEqual([]);
   });
@@ -502,7 +668,7 @@ describe("GET /api/charts/weekly: bad input", () => {
     const res = await getChart(query);
 
     expect(res.status).toBe(400);
-    expect(res.headers.get("cache-control")).toContain("no-store");
+    expect(res.headers.get("cache-control")).toBe("no-store");
     expect(await res.json()).toEqual({ status: "bad_request" });
   });
 
@@ -514,13 +680,14 @@ describe("GET /api/charts/weekly: bad input", () => {
     expect(/script|marker|zzz|qqq/.test(text)).toBe(false);
   });
 
-  it("answers 400 before it asks the database", async () => {
+  it("answers 400 for a malformed value before it asks the database", async () => {
     const res = await getChart("week=abc", "refused");
 
     expect(res.status).toBe(400);
   });
 
   it("accepts the edges: the lowest and highest limit and each kind", async () => {
+    await insertPlays([play("a", "2026-02-03T12:00:00Z")]);
     for (const q of ["limit=1", "limit=100", "kind=track", "kind=artist", "kind=album", "week=2026-02-02"]) {
       expect((await getChart(q)).status, q).toBe(200);
     }
@@ -564,24 +731,35 @@ describe("GET /api/charts/weekly: private data", () => {
 });
 
 describe("GET /api/charts/weekly: when the database fails", () => {
-  it.each<[string, SiteName, string]>([
+  // A request with a week and one without both reach the database first, so both must fail the same way.
+  const failures: [string, SiteName, string][] = [
     ["refuses the connection", "refused", "name=TypeError code=ECONNREFUSED"],
     ["never answers", "hanging", "name=TimeoutError code=none"],
     ["rejects the key", "badKey", "name=PostgrestError code=PGRST301"],
     ["is not configured", "missingEnv", "name=ServerConfigError code=SERVER_ENV_MISSING"],
-  ])("answers 503 with the same body and logs a safe reason when the database %s", async (_label, site, reason) => {
-    const started = Date.now();
-    const res = await getChart("week=2026-02-02", site);
-    const body = await res.text();
-    const log = await waitForSiteLog(site, "weekly chart failed");
+  ];
 
-    expect(res.status).toBe(503);
-    expect(res.headers.get("cache-control")).toContain("no-store");
-    expect(JSON.parse(body)).toEqual({ status: "unhealthy" });
-    expect(log).toContain(`weekly chart failed: ${reason}`);
-    expect(env.secrets.filter(({ value }) => (body + log).includes(value))).toEqual([]);
-    expect((body + log).includes(new URL(env.apiUrl).host)).toBe(false);
-    expect(Date.now() - started).toBeLessThan(15_000);
+  describe.each([
+    ["a week", "week=2026-02-02"],
+    ["no week", ""],
+  ])("on a request with %s", (_requestLabel, query) => {
+    it.each(failures)(
+      "answers 503 with the same body and logs a safe reason when the database %s",
+      async (_label, site, reason) => {
+        const started = Date.now();
+        const res = await getChart(query, site);
+        const body = await res.text();
+        const log = await waitForSiteLog(site, "weekly chart failed");
+
+        expect(res.status).toBe(503);
+        expect(res.headers.get("cache-control")).toBe("no-store");
+        expect(JSON.parse(body)).toEqual({ status: "unhealthy" });
+        expect(log).toContain(`weekly chart failed: ${reason}`);
+        expect(env.secrets.filter(({ value }) => (body + log).includes(value))).toEqual([]);
+        expect((body + log).includes(new URL(env.apiUrl).host)).toBe(false);
+        expect(Date.now() - started).toBeLessThan(15_000);
+      },
+    );
   });
 
   it("logs no failure on the healthy site", () => {
@@ -589,102 +767,56 @@ describe("GET /api/charts/weekly: when the database fails", () => {
   });
 });
 
+describe("GET /api/charts/weekly: when the database answers in a shape the site does not expect", () => {
+  // The malformed site talks to a stub that sends data the real database never would.
+  it.each<[string, string, string]>([
+    ["a chart row with a rank that is text", "week=2026-02-02&kind=track", "name=ChartShapeError code=CHART_SHAPE"],
+    ["a chart that is not a list", "week=2026-02-02&kind=track&limit=2", "name=ChartShapeError code=CHART_SHAPE"],
+    ["bounds with no latest week", "kind=artist", "name=ChartShapeError code=CHART_SHAPE"],
+    ["bounds with a latest week that is not a date", "kind=album", "name=ChartShapeError code=CHART_SHAPE"],
+  ])("answers 503 and logs ChartShapeError for %s", async (_label, query, reason) => {
+    const res = await getChart(query, "malformed");
+    const body = await res.text();
+    const log = await waitForSiteLog("malformed", `weekly chart failed: ${reason}`);
+
+    expect(res.status).toBe(503);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(JSON.parse(body)).toEqual({ status: "unhealthy" });
+    expect(log).toContain(`weekly chart failed: ${reason}`);
+    expect(log).not.toContain("name=TypeError code=none");
+  });
+});
+
 describe.each([
   ["anon key", env.anonKey],
   ["publishable key", env.publishableKey ?? ""],
-] as [string, string][])("the chart function, called with the %s", (_label, key) => {
-  it("is refused to the browser roles", async () => {
-    await insertPlays(plays("a", 1, "2026-02-03T12:00:00Z"));
-    const res = await fetch(`${env.apiUrl}/rest/v1/rpc/chart_weekly`, {
-      method: "POST",
-      headers: { apikey: key, Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        p_week: "2026-02-02",
-        p_kind: "track",
-        p_limit: 25,
-        p_cutoff: "2026-12-01T00:00:00Z",
-      }),
-    });
-    const text = await res.text();
-    const body = JSON.parse(text) as { code?: string };
+] as [string, string][])("the chart functions, called with the %s", (label, key) => {
+  const calls: [string, Record<string, unknown>][] = [
+    ["chart_weekly", { p_week: "2026-02-02", p_kind: "track", p_limit: 25, p_delay_days: 1 }],
+    [
+      "chart_weekly",
+      { p_week: "2026-02-02", p_kind: "track", p_limit: 25, p_delay_days: 0, p_now: "2030-01-01T00:00:00Z" },
+    ],
+    ["chart_bounds", { p_kind: "track", p_delay_days: 1 }],
+    ["chart_cutoff", { p_now: "2026-02-18T15:00:00Z", p_delay_days: 1 }],
+  ];
 
-    expect(res.status === 401 || res.status === 403 || body.code === "42501").toBe(true);
-    expect(text).not.toContain("Track a");
-  });
-});
-
-describe("the chart function in the database", () => {
-  it("is executable by the service role only", async () => {
-    const db = new Client({ connectionString: env.dbUrl });
-    await db.connect();
-    try {
-      const result = await db.query<{ role: string; allowed: boolean }>(
-        `select r.role, has_function_privilege(r.role, p.oid, 'EXECUTE') as allowed
-           from pg_proc p
-           join pg_namespace n on n.oid = p.pronamespace
-           cross join (values ('anon'), ('authenticated'), ('service_role')) as r(role)
-          where n.nspname = 'public' and p.proname = 'chart_weekly'
-          order by r.role`,
-      );
-      expect(result.rows).toEqual([
-        { role: "anon", allowed: false },
-        { role: "authenticated", allowed: false },
-        { role: "service_role", allowed: true },
-      ]);
-    } finally {
-      await db.end();
-    }
-  });
-});
-
-describe(`GET /api/charts/weekly with ${FULL.toLocaleString("en-US")} plays`, () => {
-  /**
-   * Each chart must arrive inside this budget. On a developer laptop it takes about 0.3 seconds,
-   * so the budget leaves room for a slower CI machine and still fails a route that reads rows into code.
-   */
-  const BUDGET_MS = 2_000;
-
-  it("answers a chart with the right rows inside the time budget", async () => {
-    const db = new Client({ connectionString: env.dbUrl });
-    await db.connect();
-    try {
-      // About 99 weeks of plays, one every 5 minutes, over 3,000 tracks, 400 artists and 800 albums.
-      // One play in ten has no ms_played (a poll row), one in ten is under 30 seconds.
-      await db.query(
-        `insert into public.plays (track_uri, track_name, artist_name, album_name, ended_at, ms_played, source)
-         select 'spotify:track:perf' || (i % 3000),
-                'Perf Track ' || (i % 3000),
-                'Perf Artist ' || (i % 400),
-                'Perf Album ' || (i % 800),
-                now() - interval '3 days' - (i * 300) * interval '1 second',
-                case when i % 10 = 0 then null
-                     when i % 10 = 1 then 10000
-                     else 30000 + (i % 270000) end,
-                case when i % 10 = 0 then 'poll' else 'export' end
-           from generate_series(1, $1::int) as i`,
-        [FULL],
-      );
-      await db.query("analyze public.plays");
-      const loaded = await db.query<{ n: string }>("select count(*) as n from public.plays");
-      expect(Number(loaded.rows[0]!.n)).toBe(FULL);
-
-      for (const kind of ["track", "artist", "album"]) {
-        const started = performance.now();
-        const res = await getChart(`kind=${kind}&limit=100`);
-        const body = (await res.json()) as Chart;
-        const elapsed = performance.now() - started;
-
-        expect(res.status).toBe(200);
-        expect(body.rows).toHaveLength(100);
-        expect(body.rows.map((r) => r.rank)).toEqual(Array.from({ length: 100 }, (_, i) => i + 1));
-        const sorted = [...body.rows].sort((a, b) => b.plays - a.plays);
-        expect(body.rows.map((r) => r.plays)).toEqual(sorted.map((r) => r.plays));
-        expect(body.rows.every((r) => r.peak_rank >= 1 && r.weeks_on_chart >= 1)).toBe(true);
-        expect(elapsed, `${kind} chart took ${Math.round(elapsed)} ms`).toBeLessThan(BUDGET_MS);
+  for (const [fn, args] of calls) {
+    it(`refuses ${fn}${"p_now" in args ? " with p_now" : ""} to the browser roles with code 42501`, async (ctx) => {
+      if (!key) {
+        ctx.skip(`The Supabase CLI reported no ${label} on this machine, so this check cannot run.`);
       }
-    } finally {
-      await db.query("truncate public.plays");
-      await db.end();
-    }
-  });
+      await insertPlays(plays("a", 1, "2026-02-03T12:00:00Z"));
+      const res = await fetch(`${env.apiUrl}/rest/v1/rpc/${fn}`, {
+        method: "POST",
+        headers: { apikey: key, Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        body: JSON.stringify(args),
+      });
+      const text = await res.text();
+      const body = JSON.parse(text) as { code?: string };
+
+      expect(body.code).toBe("42501");
+      expect(text).not.toContain("Track a");
+    });
+  }
 });
