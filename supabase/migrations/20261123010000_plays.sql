@@ -13,3 +13,4 @@ create table public.plays (
 alter table public.plays enable row level security;
 alter table public.plays force row level security;
 revoke all on public.plays from anon, authenticated, public;
+create index plays_ended_at_idx on public.plays (ended_at);
