@@ -72,6 +72,8 @@
   display: inline-block;
   width: 1.5em;
   font-size: 0.875em;
+  /* The move cell is right-aligned on a phone. The arrow keeps the left of its own box, so the gap to the number stays. */
+  text-align: left;
 }
 
 .same {
