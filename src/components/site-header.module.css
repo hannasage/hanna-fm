@@ -1,0 +1,30 @@
+.header {
+  border-bottom: 1px solid var(--rule);
+}
+
+.inner {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  max-width: var(--page);
+  margin: 0 auto;
+  padding: 1.25rem var(--gutter) 1rem;
+}
+
+@media (min-width: 48rem) {
+  .inner {
+    gap: 1.5rem;
+    padding-top: 2rem;
+    padding-bottom: 1.5rem;
+  }
+}
+
+/* Wide screens: the wordmark on the left, the Now playing slot and the sections on the right. */
+@media (min-width: 64rem) {
+  .inner {
+    flex-direction: row;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 2rem;
+  }
+}

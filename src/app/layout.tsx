@@ -1,5 +1,8 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
+import { SiteHeader } from "../components/site-header";
+import "./globals.css";
+import styles from "./layout.module.css";
 
 export const metadata: Metadata = {
   title: "hanna.fm",
@@ -9,7 +12,13 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <a href="#content" className={styles.skip}>
+          Skip to content
+        </a>
+        <SiteHeader />
+        {children}
+      </body>
     </html>
   );
 }
