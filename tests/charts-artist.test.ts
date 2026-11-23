@@ -23,16 +23,16 @@ const NOW = "2026-03-12T15:00:00Z";
 
 type ArtistRow = { key: string; name: string; artist: string | null; plays: number };
 
-async function chartAt(db: Client, week: string, kind = "track"): Promise<ArtistRow[]> {
+async function chartAt(db: Client, week: string, kind = "track", now = NOW): Promise<ArtistRow[]> {
   const result = await db.query<ArtistRow>(
     "select key, name, artist, plays from public.chart_weekly($1::date, $2, 25, 1, $3::timestamptz)",
-    [week, kind, NOW],
+    [week, kind, now],
   );
   return result.rows;
 }
 
-async function artistOf(week: string, uri: string): Promise<string | null | undefined> {
-  return withDb(async (db) => (await chartAt(db, week)).find((r) => r.key === uri)?.artist);
+async function artistOf(week: string, uri: string, now = NOW): Promise<string | null | undefined> {
+  return withDb(async (db) => (await chartAt(db, week, "track", now)).find((r) => r.key === uri)?.artist);
 }
 
 /** One track played under more than one artist name. The URI is the same, so the chart key is the same. */
@@ -76,7 +76,7 @@ describe("chart_weekly: the artist column", () => {
   });
 
   it("keeps the artist name exactly as stored, with unicode, quotes and a dash", async () => {
-    const odd = "Björk — \"The 'Quote'\" \u{1F3B5}";
+    const odd = "S\u00f8lv\u00e6n Ma\u00ebl \u2014 \"The 'Quote'\" \u{1F3B5}";
     await insertPlays([play("odd", "2026-02-03T12:00:00Z", { artist_name: odd })]);
     await withDb(async (db) => {
       expect((await chartAt(db, "2026-02-02", "track"))[0]!.artist).toBe(odd);
@@ -170,6 +170,73 @@ describe("chart_weekly: the artist rule when a track key has more than one artis
       Array.from({ length: 2 }, (_, i) => shared("Poll", `2026-03-04T12:0${i}:00Z`, { source: "poll", ms_played: null })),
     );
     expect(await artistOf("2026-03-02", SHARED_URI)).toBe("Poll");
+  });
+
+  it("breaks a tie after normalising Unicode form (NFKC), so a decomposed accent sorts as the accented letter", async () => {
+    // "Ze" plus a combining acute is the same name as "Z\u00e9" once normalised. Raw bytes put it before "Zf",
+    // and the normalised form puts it after, so the tie goes to "Zf".
+    await insertPlays([shared("Ze\u0301", "2026-02-03T12:00:00Z"), shared("Zf", "2026-02-03T12:10:00Z")]);
+    expect(await artistOf("2026-02-02", SHARED_URI)).toBe("Zf");
+  });
+
+  it("leaves a play at exactly the end of the week, Monday 00:00 Eastern, to the next week", async () => {
+    // Week 2026-02-02 ends at 2026-02-09T05:00:00Z (standard time).
+    await insertPlays([
+      shared("Early", "2026-02-03T12:00:00Z"),
+      shared("Boundary", "2026-02-09T05:00:00Z"),
+      shared("Boundary", "2026-02-09T05:01:00Z"),
+      shared("Boundary", "2026-02-09T05:02:00Z"),
+      shared("Last", "2026-02-09T04:59:59Z"),
+    ]);
+    await withDb(async (db) => {
+      // Early 1 and Last 1 tie, and Boundary is not counted. The tie goes to the name first in byte order.
+      expect(await chartAt(db, "2026-02-02")).toEqual([
+        { key: SHARED_URI, name: "Shared Song", artist: "Early", plays: 2 },
+      ]);
+      // The next week counts the three Boundary plays.
+      expect((await chartAt(db, "2026-02-09"))[0]).toMatchObject({ artist: "Boundary", plays: 3 });
+    });
+  });
+
+  it("counts a play at exactly the public cutoff, and not one a millisecond later", async () => {
+    // At NOW the cutoff is 2026-03-11T04:00:00Z. Week 2026-03-09 is open.
+    await insertPlays([
+      shared("Alpha", "2026-03-09T12:00:00Z"),
+      shared("Zulu", "2026-03-09T13:00:00Z"),
+      shared("Zulu", "2026-03-11T04:00:00.000Z"),
+      ...[1, 2, 3, 4, 5].map((ms) => shared("Yankee", `2026-03-11T04:00:00.00${ms}Z`)),
+    ]);
+    await withDb(async (db) => {
+      // Zulu has 2 counted plays. Alpha has 1. Yankee's five are all after the cutoff.
+      expect(await chartAt(db, "2026-03-09")).toEqual([
+        { key: SHARED_URI, name: "Shared Song", artist: "Zulu", plays: 3 },
+      ]);
+    });
+  });
+
+  it("keeps the week edge on the Eastern clock in a week that holds the spring forward change", async () => {
+    // Sunday 2026-03-08 is 23 hours long. Week 2026-03-02 ends at Monday 2026-03-09T04:00:00Z.
+    await insertPlays([
+      shared("Mid", "2026-03-03T12:00:00Z"),
+      shared("Edge", "2026-03-09T03:58:00Z"),
+      shared("Edge", "2026-03-09T03:59:59Z"),
+      ...[0, 1, 2].map((i) => shared("Monday", `2026-03-09T04:0${i}:00Z`)),
+    ]);
+    expect(await artistOf("2026-03-02", SHARED_URI)).toBe("Edge");
+    expect(await artistOf("2026-03-09", SHARED_URI)).toBe("Monday");
+  });
+
+  it("keeps the week edge on the Eastern clock in a week that holds the fall back change", async () => {
+    // Sunday 2026-11-01 is 25 hours long. Week 2026-10-26 ends at Monday 2026-11-02T05:00:00Z.
+    const now = "2026-11-12T15:00:00Z";
+    await insertPlays([
+      shared("Mid", "2026-10-27T12:00:00Z"),
+      shared("Edge", "2026-11-02T04:58:00Z"),
+      shared("Edge", "2026-11-02T04:59:59Z"),
+      ...[0, 1, 2].map((i) => shared("Monday", `2026-11-02T05:0${i}:00Z`)),
+    ]);
+    expect(await artistOf("2026-10-26", SHARED_URI, now)).toBe("Edge");
+    expect(await artistOf("2026-11-02", SHARED_URI, now)).toBe("Monday");
   });
 
   it("does not move the rank, plays or name of the row", async () => {

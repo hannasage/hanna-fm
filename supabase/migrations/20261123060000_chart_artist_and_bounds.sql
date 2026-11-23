@@ -13,8 +13,10 @@
 --      cutoff, and 30 seconds or longer or with no ms_played. Nothing newer than the asked week
 --      takes part, so a later week never changes an earlier chart.
 --   2. The artist name with the most counted plays wins.
---   3. A tie goes to the artist name that sorts first in byte order (collation "C"). A capital
---      letter therefore sorts before a lower case one.
+--   3. A tie goes to the artist name that sorts first in byte order (collation "C") after the name is
+--      normalised to Unicode form NFKC, so a letter and the same letter written as a base plus an accent
+--      sort alike. A capital letter sorts before a lower case one. Two names that differ only in form
+--      still count apart, and a tie between them goes to the first in plain byte order.
 --
 -- Nothing else changes. Every rule of 20261123030000_chart_weekly.sql stays: the public delay snapped to
 -- Eastern midnight, whole minutes, the 5 second statement timeout, search_path = '', stable and
@@ -69,7 +71,7 @@ begin
                  else p.album_name || ' - ' || p.artist_name
                end) as item_name,
            -- One album key has one artist, so max() only picks that one name. A track gets its artist below.
-           case when p_kind = 'album' then max(p.artist_name) end as album_artist,
+           max(case when p_kind = 'album' then p.artist_name end) as album_artist,
            count(*)::integer as plays,
            coalesce(sum(p.ms_played), 0) as ms
       from public.plays p
@@ -122,7 +124,7 @@ begin
            and (p.ms_played is null or p.ms_played >= 30000)
          group by p.track_uri, p.artist_name
       ) c
-     order by c.track_uri, c.n desc, c.artist_name collate "C"
+     order by c.track_uri, c.n desc, normalize(c.artist_name, nfkc) collate "C", c.artist_name collate "C"
   )
   select t.rnk, t.item_key, t.item_name,
          case p_kind

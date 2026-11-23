@@ -77,7 +77,7 @@ export function parseChartQuery(params: URLSearchParams): ChartQuery | null {
 
 /** What the database says about the weeks it holds. */
 export type ChartBounds = {
-  /** The Monday of the first stored play, or null when nothing is stored. */
+  /** The Monday of the first week of a counted play, or null when no play counts. The chart counts only plays outside the public delay and of at least 30 seconds (or with no length). */
   firstWeek: string | null;
   /** The Monday of the latest week with a play the chart would count, or null when none qualifies. */
   latestWeek: string | null;

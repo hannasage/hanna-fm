@@ -22,7 +22,8 @@ const BUDGET_MS = 900;
 const MID_HISTORY_WEEK = "2025-09-01";
 
 const KEYS = {
-  track: { key: "track_uri", name: "track_name", artist: "artist_name", where: "true" },
+  // A track's artist is the most played name up to the end of the week. It is worked out in the final select.
+  track: { key: "track_uri", name: "track_name", artist: "null::text", where: "true" },
   artist: { key: "artist_name", name: "artist_name", artist: "null::text", where: "true" },
   album: {
     key: "md5(album_name) || '.' || md5(artist_name)",
@@ -59,7 +60,18 @@ function independentChart(kind: keyof typeof KEYS): string {
              ) as rnk
         from weekly w
     )
-    select cur.rnk::int as rank, cur.item_key as key, cur.item_name as name, cur.item_artist as artist, cur.plays::int as plays,
+    select cur.rnk::int as rank, cur.item_key as key, cur.item_name as name,
+           ${
+             kind === "track"
+               ? `(select a.artist_name from public.plays a
+                    where a.track_uri = cur.item_key
+                      and (a.ms_played is null or a.ms_played >= 30000)
+                      and (a.ended_at at time zone 'America/New_York') < (cur.week + 7)::timestamp
+                    group by a.artist_name
+                    order by count(*) desc, a.artist_name collate "C"
+                    limit 1)`
+               : "cur.item_artist"
+           } as artist, cur.plays::int as plays,
            round(cur.ms / 60000.0)::int as minutes,
            (select p.rnk::int from ranked p where p.item_key = cur.item_key and p.week = cur.week - 7) as last_week_rank,
            (select min(h.rnk)::int from ranked h where h.item_key = cur.item_key and h.week <= cur.week) as peak_rank,
@@ -81,7 +93,8 @@ describe(`GET /api/charts/weekly with ${FULL.toLocaleString("en-US")} plays`, ()
         `insert into public.plays (track_uri, track_name, artist_name, album_name, ended_at, ms_played, source)
          select 'spotify:track:perf' || t.n,
                 'Perf Track ' || t.n,
-                'Perf Artist ' || (t.n % 400),
+                -- A third of the tracks have a second artist name on one play in five, so the artist rule has real work.
+                'Perf Artist ' || ((t.n + case when t.n % 3 = 0 and g.i % 5 = 0 then 1 else 0 end) % 400),
                 'Perf Album ' || (t.n % 800),
                 timestamptz '2025-01-06 17:00:00+00' + (g.i * 180) * interval '1 second',
                 case when g.i % 10 = 0 then null
@@ -147,6 +160,29 @@ describe(`GET /api/charts/weekly with ${FULL.toLocaleString("en-US")} plays`, ()
       expect(elapsed, `${kind} chart took ${Math.round(elapsed)} ms`).toBeLessThan(BUDGET_MS);
     },
   );
+
+  it("holds tracks played under two artist names, and some of them reach the chart", async () => {
+    const result = await withDb((db) =>
+      db.query<{ n: string }>(
+        "select count(*) as n from (select track_uri from public.plays group by track_uri having count(distinct artist_name) > 1) t",
+      ),
+    );
+    expect(Number(result.rows[0]!.n)).toBeGreaterThan(100);
+
+    const res = await fetch(
+      `${env.sites.healthy}/api/charts/weekly?week=${MID_HISTORY_WEEK}&kind=track&limit=100`,
+    );
+    const body = (await res.json()) as Chart;
+    const keys = body.rows.map((r) => r.key);
+    const multi = await withDb((db) =>
+      db.query<{ n: string }>(
+        `select count(*) as n from (select track_uri from public.plays where track_uri = any($1)
+          group by track_uri having count(distinct artist_name) > 1) t`,
+        [keys],
+      ),
+    );
+    expect(Number(multi.rows[0]!.n)).toBeGreaterThan(0);
+  });
 
   it("gives the hand-worked ranks for the fixture weeks, among the bulk history", async () => {
     const third = await (await fetch(`${env.sites.healthy}/api/charts/weekly?week=2026-04-20`)).json();
