@@ -5,7 +5,7 @@ import { join } from "node:path";
  * Values the global setup puts in the environment for the test workers.
  * They live in memory only. No test writes them to disk or prints them.
  */
-export type SiteName = "healthy" | "refused" | "hanging" | "badKey" | "missingEnv";
+export type SiteName = "healthy" | "refused" | "hanging" | "badKey" | "missingEnv" | "malformed";
 
 export type TestEnv = {
   apiUrl: string;
@@ -42,6 +42,7 @@ export function testEnv(): TestEnv {
       hanging: need("TEST_SITE_HANGING_URL"),
       badKey: need("TEST_SITE_BADKEY_URL"),
       missingEnv: need("TEST_SITE_MISSINGENV_URL"),
+      malformed: need("TEST_SITE_MALFORMED_URL"),
     },
   };
 }
