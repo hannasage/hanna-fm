@@ -1,6 +1,6 @@
 # hanna.fm
 
-The website for hanna.fm: a map of what one listener listens to. Next.js, TypeScript, Supabase. Private until the first public release. The spec is GitHub issue 1 and the tickets that follow it.
+The website for hanna.fm: a map of what one listener listens to. Next.js, TypeScript, Supabase. The spec is GitHub issue 1 and the tickets that follow it.
 
 ## The four gates
 

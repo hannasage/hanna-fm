@@ -4,7 +4,7 @@ A map of what Hanna listens to. A 3D genre map, weekly charts, a shelf of record
 
 This repository holds the website. The poller and the export import live in a separate private repository, so this one never holds Spotify tokens, data files or export files.
 
-Status: in development. Private until the first public release.
+Status: in development.
 
 ## Rules for every commit
 
