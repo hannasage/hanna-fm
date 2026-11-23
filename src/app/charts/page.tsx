@@ -2,7 +2,7 @@ import { ChartMessage, CountingNote, InProgressNote } from "../../components/cha
 import { ChartTable } from "../../components/chart-table";
 import { ChartTabs } from "../../components/chart-tabs";
 import { ChartWeekBar } from "../../components/chart-week-bar";
-import { chartsHref, formatDay, parseChartsParams, type SearchParams } from "../../lib/chart-page";
+import { chartsHref, formatDay, parseChartsParams, type ChartsView, type SearchParams } from "../../lib/chart-page";
 import { loadChartPage } from "../../lib/chart-queries";
 import styles from "./page.module.css";
 
@@ -31,7 +31,7 @@ function InvalidView() {
   );
 }
 
-async function ChartView({ view }: { view: NonNullable<ReturnType<typeof parseChartsParams>> }) {
+async function ChartView({ view }: { view: ChartsView }) {
   const data = await loadChartPage(view);
   const latest = chartsHref({ kind: view.kind, week: null });
 
