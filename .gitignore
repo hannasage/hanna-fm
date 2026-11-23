@@ -30,6 +30,22 @@ Streaming_History*.json
 endsong*.json
 my_spotify_data*
 Spotify*Account*Data*
+YourLibrary.json
+Playlist*.json
+Userdata.json
+*.tar.gz
+*.tgz
+*.7z
+*.xlsx
+*.parquet
+*.bak
+.envrc
+*.p12
+*.pfx
+# SQL files stay out unless they are the seed or a migration.
+*.sql
+!supabase/seed.sql
+!supabase/migrations/*.sql
 
 # Supabase local temp folders
 supabase/.temp/
@@ -41,7 +57,6 @@ supabase/volumes/
 # Dependencies and build output
 node_modules/
 .next/
-.next-test-*/
 out/
 coverage/
 *.tsbuildinfo
