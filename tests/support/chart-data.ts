@@ -23,6 +23,8 @@ export type ChartRow = {
   rank: number;
   key: string;
   name: string;
+  /** The artist name for a track or album row, null for an artist row. */
+  artist: string | null;
   plays: number;
   minutes: number;
   last_week_rank: number | null;
@@ -30,7 +32,16 @@ export type ChartRow = {
   weeks_on_chart: number;
 };
 
-export type Chart = { week_start: string | null; kind: string; rows: ChartRow[]; status?: string };
+export type Chart = {
+  week_start: string | null;
+  /** The Monday of the first week the chart counts, or null when no play qualifies. */
+  first_week: string | null;
+  /** The Monday of the latest week the chart counts, or null when no play qualifies. */
+  latest_week: string | null;
+  kind: string;
+  rows: ChartRow[];
+  status?: string;
+};
 
 export function play(track: string, endedAt: string, overrides: Partial<Play> = {}): Play {
   return {

@@ -46,7 +46,14 @@ export async function GET(request: Request): Promise<Response> {
       if (bounds.latestWeek === null) {
         // No play qualifies yet. Say so, rather than showing the current week as if it were quiet.
         return Response.json(
-          { week_start: null, kind: query.kind, rows: [], status: "no_data" },
+          {
+            week_start: null,
+            first_week: bounds.firstWeek,
+            latest_week: bounds.latestWeek,
+            kind: query.kind,
+            rows: [],
+            status: "no_data",
+          },
           { status: 200, headers: OK_HEADERS },
         );
       }
@@ -71,7 +78,13 @@ export async function GET(request: Request): Promise<Response> {
       .throwOnError();
 
     return Response.json(
-      { week_start: week, kind: query.kind, rows: toChartRows(data) },
+      {
+        week_start: week,
+        first_week: bounds.firstWeek,
+        latest_week: bounds.latestWeek,
+        kind: query.kind,
+        rows: toChartRows(data),
+      },
       { status: 200, headers: OK_HEADERS },
     );
   } catch (error) {

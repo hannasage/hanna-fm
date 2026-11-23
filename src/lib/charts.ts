@@ -77,7 +77,7 @@ export function parseChartQuery(params: URLSearchParams): ChartQuery | null {
 
 /** What the database says about the weeks it holds. */
 export type ChartBounds = {
-  /** The Monday of the first stored play, or null when nothing is stored. */
+  /** The Monday of the first week of a counted play, or null when no play counts. The chart counts only plays outside the public delay and of at least 30 seconds (or with no length). */
   firstWeek: string | null;
   /** The Monday of the latest week with a play the chart would count, or null when none qualifies. */
   latestWeek: string | null;
@@ -115,6 +115,8 @@ export type ChartRow = {
   rank: number;
   key: string;
   name: string;
+  /** The artist name of a track or album row. Null on an artist row, which is the artist. */
+  artist: string | null;
   plays: number;
   /** Whole minutes. A row never shows the exact length of one play. */
   minutes: number;
@@ -139,10 +141,15 @@ export function toChartRow(raw: unknown): ChartRow {
   if (typeof row.key !== "string" || typeof row.name !== "string") {
     throw new ChartShapeError();
   }
+  // A missing artist is a shape error, not a null: the database always sends the field.
+  if (row.artist !== null && typeof row.artist !== "string") {
+    throw new ChartShapeError();
+  }
   return {
     rank: whole(row.rank),
     key: row.key,
     name: row.name,
+    artist: row.artist,
     plays: whole(row.plays),
     minutes: whole(row.minutes),
     last_week_rank: row.last_week_rank === null ? null : whole(row.last_week_rank),

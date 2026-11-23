@@ -81,9 +81,9 @@ describe("GET /api/charts/weekly: ranks, last week, peak and weeks on chart", ()
     expect(c.kind).toBe("track");
     // Every play is 200,000 ms: 3 plays = 10 minutes, 2 plays = 6.67 (shown 7), 1 play = 3.33 (shown 3).
     expect(c.rows).toEqual([
-      { rank: 1, key: "spotify:track:synthetic-a", name: "Track a", plays: 3, minutes: 10, last_week_rank: null, peak_rank: 1, weeks_on_chart: 1 },
-      { rank: 2, key: "spotify:track:synthetic-b", name: "Track b", plays: 2, minutes: 7, last_week_rank: null, peak_rank: 2, weeks_on_chart: 1 },
-      { rank: 3, key: "spotify:track:synthetic-c", name: "Track c", plays: 1, minutes: 3, last_week_rank: null, peak_rank: 3, weeks_on_chart: 1 },
+      { rank: 1, key: "spotify:track:synthetic-a", name: "Track a", artist: "Artist a", plays: 3, minutes: 10, last_week_rank: null, peak_rank: 1, weeks_on_chart: 1 },
+      { rank: 2, key: "spotify:track:synthetic-b", name: "Track b", artist: "Artist b", plays: 2, minutes: 7, last_week_rank: null, peak_rank: 2, weeks_on_chart: 1 },
+      { rank: 3, key: "spotify:track:synthetic-c", name: "Track c", artist: "Artist c", plays: 1, minutes: 3, last_week_rank: null, peak_rank: 3, weeks_on_chart: 1 },
     ]);
   });
 
@@ -131,7 +131,7 @@ describe("GET /api/charts/weekly: ranks, last week, peak and weeks on chart", ()
     await loadThreeWeeks();
     const c = await chart("week=2026-03-02");
 
-    expect(c).toEqual({ week_start: "2026-03-02", kind: "track", rows: [] });
+    expect(c).toEqual({ week_start: "2026-03-02", first_week: "2026-02-02", latest_week: "2026-02-16", kind: "track", rows: [] });
   });
 });
 
@@ -156,25 +156,25 @@ describe("GET /api/charts/weekly: the default week", () => {
     const res = await getChart("");
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ week_start: null, kind: "track", rows: [], status: "no_data" });
+    expect(await res.json()).toEqual({ week_start: null, first_week: null, latest_week: null, kind: "track", rows: [], status: "no_data" });
   });
 
   it("keeps the kind in a no_data answer", async () => {
     const res = await getChart("kind=artist");
 
-    expect(await res.json()).toEqual({ week_start: null, kind: "artist", rows: [], status: "no_data" });
+    expect(await res.json()).toEqual({ week_start: null, first_week: null, latest_week: null, kind: "artist", rows: [], status: "no_data" });
   });
 
   it("answers no_data when every stored play is under 30 seconds", async () => {
     await insertPlays([play("short", "2026-02-03T12:00:00Z", { ms_played: 29_999 })]);
 
-    expect(await (await getChart("")).json()).toEqual({ week_start: null, kind: "track", rows: [], status: "no_data" });
+    expect(await (await getChart("")).json()).toEqual({ week_start: null, first_week: null, latest_week: null, kind: "track", rows: [], status: "no_data" });
   });
 
   it("answers no_data when every stored play is inside the public delay", async () => {
     await insertPlays([play("fresh", new Date(Date.now() - 3_600_000).toISOString())]);
 
-    expect(await (await getChart("")).json()).toEqual({ week_start: null, kind: "track", rows: [], status: "no_data" });
+    expect(await (await getChart("")).json()).toEqual({ week_start: null, first_week: null, latest_week: null, kind: "track", rows: [], status: "no_data" });
   });
 
   it("skips a newer week that holds only plays under 30 seconds", async () => {
@@ -212,6 +212,8 @@ describe("GET /api/charts/weekly: the default week", () => {
 
     expect(await (await getChart("kind=album")).json()).toEqual({
       week_start: null,
+      first_week: null,
+      latest_week: null,
       kind: "album",
       rows: [],
       status: "no_data",
@@ -490,7 +492,7 @@ describe("GET /api/charts/weekly: ranking rules", () => {
     await insertPlays(plays("onlypoll", 3, "2026-02-03T12:00:00Z", { source: "poll", ms_played: null }));
 
     expect((await chart(week)).rows).toEqual([
-      { rank: 1, key: "spotify:track:synthetic-onlypoll", name: "Track onlypoll", plays: 3, minutes: 0, last_week_rank: null, peak_rank: 1, weeks_on_chart: 1 },
+      { rank: 1, key: "spotify:track:synthetic-onlypoll", name: "Track onlypoll", artist: "Artist onlypoll", plays: 3, minutes: 0, last_week_rank: null, peak_rank: 1, weeks_on_chart: 1 },
     ]);
   });
 
@@ -607,7 +609,7 @@ describe("GET /api/charts/weekly: kind", () => {
     const c = await chart("week=2026-02-09&kind=artist");
 
     expect(c.rows).toEqual([
-      { rank: 1, key: "Other", name: "Other", plays: 3, minutes: 10, last_week_rank: 2, peak_rank: 1, weeks_on_chart: 2 },
+      { rank: 1, key: "Other", name: "Other", artist: null, plays: 3, minutes: 10, last_week_rank: 2, peak_rank: 1, weeks_on_chart: 2 },
     ]);
   });
 });
@@ -759,12 +761,13 @@ describe("GET /api/charts/weekly: private data", () => {
     const text = await res.text();
     const body = JSON.parse(text) as Chart;
 
-    expect(Object.keys(body)).toEqual(["week_start", "kind", "rows"]);
+    expect(Object.keys(body)).toEqual(["week_start", "first_week", "latest_week", "kind", "rows"]);
     for (const row of body.rows) {
       expect(Object.keys(row)).toEqual([
         "rank",
         "key",
         "name",
+        "artist",
         "plays",
         "minutes",
         "last_week_rank",
