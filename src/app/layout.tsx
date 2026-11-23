@@ -17,9 +17,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           Skip to content
         </a>
         <SiteHeader />
-        <div id="content" tabIndex={-1} className={styles.content}>
-          {children}
-        </div>
+        {children}
       </body>
     </html>
   );

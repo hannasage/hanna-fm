@@ -10,14 +10,27 @@
 .art {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: calc(100cqw / 25);
-  /* A whole pixel size keeps each row on whole pixels, so the half-blocks meet without a seam. */
-  font-size: round(down, calc(100cqw / 25), 1px);
+  /* First fallback, for browsers with no container units: a share of the screen width. */
+  font-size: min(3.4vw, 1rem);
   font-weight: 400;
   line-height: 1;
   font-variant-ligatures: none;
   font-synthesis: none;
   white-space: pre;
+}
+
+/* The art fills its box. The divisor is the art width in em. */
+@supports (width: 1cqw) {
+  .art {
+    font-size: calc(100cqw / 25);
+  }
+}
+
+/* A whole pixel size keeps each row on whole pixels, so the half-blocks meet without a seam. */
+@supports (font-size: round(down, 1.5px, 1px)) {
+  .art {
+    font-size: round(down, calc(100cqw / 25), 1px);
+  }
 }
 
 .row {

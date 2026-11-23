@@ -5,6 +5,11 @@ import { usePathname } from "next/navigation";
 import { NAV_ITEMS } from "../lib/nav";
 import styles from "./site-nav.module.css";
 
+/** True on the page itself and on any page below it. */
+function isCurrent(pathname: string, href: string): boolean {
+  return pathname === href || pathname.startsWith(`${href}/`);
+}
+
 /** The section list and the Now playing slot. A section with no page is shown but is not a link. */
 export function SiteNav() {
   const pathname = usePathname();
@@ -16,7 +21,7 @@ export function SiteNav() {
             {item.href === null ? (
               <span className={`${styles.item} ${styles.soon}`}>
                 {item.label}
-                <span className={styles.visuallyHidden}> coming soon</span>
+                <span className={styles.visuallyHidden}>, coming soon</span>
                 <span className={styles.tag} aria-hidden="true">
                   soon
                 </span>
@@ -25,7 +30,7 @@ export function SiteNav() {
               <Link
                 href={item.href}
                 className={`${styles.item} ${styles.link}`}
-                aria-current={pathname === item.href ? "page" : undefined}
+                aria-current={isCurrent(pathname, item.href) ? "page" : undefined}
               >
                 {item.label}
               </Link>
