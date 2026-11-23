@@ -100,7 +100,15 @@ const NONE = {
  * before privileges, so a made-up column would be refused for the wrong reason.
  * A new table needs an entry here, or the write test below fails on purpose.
  */
-const WRITE_PROBES: Record<string, { insert: Record<string, unknown>; update: Record<string, unknown> }> = {
+const WRITE_PROBES: Record<
+  string,
+  {
+    insert: Record<string, unknown>;
+    update: Record<string, unknown>;
+    /** The row filter for the update and delete calls. Defaults to `id=gte.0`, for tables with an id. */
+    filter?: string;
+  }
+> = {
   health_check: {
     insert: { label: "browser write" },
     update: { label: "browser write" },
@@ -115,6 +123,20 @@ const WRITE_PROBES: Record<string, { insert: Record<string, unknown>; update: Re
       source: "poll",
     },
     update: { track_name: "browser write" },
+  },
+  items: {
+    insert: { kind: "track", name: "browser write", source_key: "spotify:track:browserwrite" },
+    update: { name: "browser write" },
+  },
+  mb_cache: {
+    insert: { request_hash: "0".repeat(64), candidates: [] },
+    update: { candidates: [] },
+    filter: "request_hash=not.is.null",
+  },
+  job_locks: {
+    insert: { name: "browser-write" },
+    update: { locked_until: "2026-01-01T00:00:00Z" },
+    filter: "name=not.is.null",
   },
 };
 
@@ -168,6 +190,10 @@ describe("row-level security", () => {
 
   it("finds the plays table", () => {
     expect(tables).toContain("plays");
+  });
+
+  it("finds the items, mb_cache and job_locks tables", () => {
+    expect(tables).toEqual(expect.arrayContaining(["items", "mb_cache", "job_locks"]));
   });
 
   it("is enabled and forced on every public table", async () => {
@@ -303,12 +329,13 @@ describe.each([
         headers: json,
         body: JSON.stringify(probe!.insert),
       });
-      const update = await fetch(`${env.apiUrl}/rest/v1/${table}?id=gte.0`, {
+      const filter = probe!.filter ?? "id=gte.0";
+      const update = await fetch(`${env.apiUrl}/rest/v1/${table}?${filter}`, {
         method: "PATCH",
         headers: json,
         body: JSON.stringify(probe!.update),
       });
-      const remove = await fetch(`${env.apiUrl}/rest/v1/${table}?id=gte.0`, {
+      const remove = await fetch(`${env.apiUrl}/rest/v1/${table}?${filter}`, {
         method: "DELETE",
         headers: json,
       });
