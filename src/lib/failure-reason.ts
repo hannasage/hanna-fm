@@ -13,6 +13,19 @@ export class ChartShapeError extends Error {
 }
 
 /**
+ * The database answered, but a poller run or state row is not in the shape the status route expects.
+ * The message never holds a value from the row.
+ */
+export class PollerStatusShapeError extends Error {
+  readonly code = "POLLER_SHAPE";
+
+  constructor() {
+    super("The database returned a poller row in a shape the site does not expect.");
+    this.name = "PollerStatusShapeError";
+  }
+}
+
+/**
  * Turns any thrown value into a short reason that is safe to log.
  * It keeps the error name and one code, and nothing else. The message is
  * never read, because a message can hold a key, an address or a query.

@@ -138,6 +138,19 @@ const WRITE_PROBES: Record<
     update: { locked_until: "2026-01-01T00:00:00Z" },
     filter: "name=not.is.null",
   },
+  poller_runs: {
+    insert: {
+      started_at: "2026-01-01T00:00:00Z",
+      finished_at: "2026-01-01T00:00:01Z",
+      outcome: "ok",
+    },
+    update: { fetched: 1 },
+  },
+  poller_state: {
+    insert: { key: "browser_write", value: "browser write" },
+    update: { value: "browser write" },
+    filter: "key=not.is.null",
+  },
 };
 
 function restHeaders(key: string, extra: Record<string, string> = {}) {
@@ -190,6 +203,10 @@ describe("row-level security", () => {
 
   it("finds the plays table", () => {
     expect(tables).toContain("plays");
+  });
+
+  it("finds the poller_runs and poller_state tables", () => {
+    expect(tables).toEqual(expect.arrayContaining(["poller_runs", "poller_state"]));
   });
 
   it("finds the items, mb_cache and job_locks tables", () => {
