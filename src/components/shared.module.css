@@ -1,0 +1,85 @@
+/*
+ * Pieces that more than one component uses. A component takes one with `composes`.
+ * A composed rule and a rule in another file never set the same property, so the order of the files does not matter.
+ * Where a local rule must beat a composed one it uses a longer selector, such as `.step.stepOff`.
+ * Inside this file, at equal specificity, the later rule wins.
+ */
+
+/* Text for a screen reader that is not drawn. */
+.sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* The lamp: a small square before a line of text, like an indicator on a front panel. It is on (signal colour) by default. */
+.lamp {
+  --lamp: 0.625rem;
+}
+
+.lamp::before {
+  content: "";
+  display: inline-block;
+  width: var(--lamp);
+  height: var(--lamp);
+  margin-right: var(--lamp);
+  background: var(--signal);
+  vertical-align: 0.05em;
+  /* Paper keeps the square when a person prints with background graphics off. */
+  print-color-adjust: exact;
+}
+
+/* The same lamp, switched off: an outline and no fill. It sits after `.lamp::before`, so it wins. */
+.lampOff::before {
+  background: transparent;
+  border: 1px solid var(--muted);
+}
+
+/* The name of the chart being read: the second voice on the page after the h1. */
+.heading {
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.4;
+}
+
+/* A control with a box: the week select, Show, the week links and the way on from a message. */
+.control {
+  min-height: var(--target);
+  border: 1px solid var(--ink);
+  border-radius: 0;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--control-size, 0.875rem);
+}
+
+/* Every link or button that has a hover state underlines in the same way. */
+.hover:hover {
+  text-decoration: underline;
+  text-underline-offset: 0.25em;
+}
+
+/*
+ * A fine pointer also gets a faint wash behind the control, which fades in over 120 ms. Color only: no movement, no size change.
+ * The fade is set on the hovered state alone, so leaving is instant, and so is the current tab changing: its fill never fades
+ * while its text colour flips. A touch screen has no hover, so it gets none (a tap would leave the wash behind).
+ * Focus gets no transition: a ring that fades in would arrive late for a person on the keyboard.
+ */
+@media (hover: hover) {
+  .hover:not([aria-current="page"]):hover {
+    background-color: var(--wash);
+  }
+}
+
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .hover:not([aria-current="page"]):hover {
+    transition: background-color var(--t-hover) var(--ease-out);
+  }
+}

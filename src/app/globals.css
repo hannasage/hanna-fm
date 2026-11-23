@@ -11,6 +11,12 @@
   --faint: #5a6468;
   --signal: #b4380a;
   --rule: #9aa3a6;
+  --wash: color-mix(in srgb, var(--ink) 5%, transparent);
+  /* The smallest size of anything a person taps or clicks. */
+  --target: 2.75rem;
+  /* Motion: one ease-out curve for the whole site, and the length of a hover fade. */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --t-hover: 120ms;
   --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace;
   --font-body: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --gutter: 1rem;
@@ -37,6 +43,13 @@
 html {
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
+  accent-color: var(--signal);
+}
+
+/* The parts the browser draws take the palette too. The selection reads at 5:1 or better. */
+::selection {
+  background: var(--signal);
+  color: var(--bg);
 }
 
 body {

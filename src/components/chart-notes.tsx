@@ -18,7 +18,7 @@ export function ChartMessage({
     <section className={styles.message}>
       <h2 className={styles.messageTitle}>{title}</h2>
       <p>{children}</p>
-      <p>
+      <p className={styles.actions}>
         <Link href={href} className={styles.action}>
           {action}
         </Link>

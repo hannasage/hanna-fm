@@ -304,6 +304,29 @@ describe("the Charts page with data", () => {
       expect(textOf(first.html)).toContain("Previous week (first week)");
     });
 
+    it("gives a week link the hover style and a missing one none, so a switched-off link never looks live on a mouse", async () => {
+      /** The two week controls in page order, Previous then Next, with their tag and class names. */
+      const stepsOf = (html: string) =>
+        [...html.matchAll(/<(a|span)\b([^>]*\bclass="[^"]*step[^"]*"[^>]*)>/g)].map((m) => ({
+          tag: m[1],
+          names: (/class="([^"]*)"/.exec(m[2] ?? "")?.[1] ?? "").split(/\s+/),
+        }));
+      const hasHover = (names: string[]) => names.some((name) => name === "hover" || name.endsWith("_hover"));
+
+      // At the first week Previous is a switched-off span and Next is a live link.
+      const [off, live] = stepsOf((await page(`week=${FIRST}`)).html);
+      expect([off?.tag, live?.tag]).toEqual(["span", "a"]);
+      expect(hasHover(off!.names)).toBe(false);
+      expect(hasHover(live!.names)).toBe(true);
+
+      // At the latest week Next is the switched-off span and Previous is the live link.
+      const [livePrevious, offNext, ...rest] = stepsOf((await page(`week=${W3}`)).html);
+      expect([livePrevious?.tag, offNext?.tag]).toEqual(["a", "span"]);
+      expect(hasHover(livePrevious!.names)).toBe(true);
+      expect(hasHover(offNext!.names)).toBe(false);
+      expect(rest).toHaveLength(0);
+    });
+
     it("keeps the kind in the previous and next links", async () => {
       const { html } = await page(`kind=album&week=${W2}`);
       expect(hrefsOf(html)).toEqual(expect.arrayContaining([`/charts?kind=album&week=${W1}`, `/charts?kind=album&week=${W3}`]));
@@ -359,6 +382,18 @@ describe("the Charts page with data", () => {
         expect(row.cells.filter((c) => c.tag === "th")).toHaveLength(1);
         expect(row.cells[2]!.attrs).toContain('scope="row"');
       }
+    });
+
+    it.each([
+      ["kind=artist", "Artist"],
+      ["kind=album", "Album"],
+    ] as const)("names the first column after what the chart ranks (%s)", async (query, head) => {
+      const { html } = await page(query);
+      const heads = [...tableOf(html)!.matchAll(/<th\b([^>]*)>([\s\S]*?)<\/th>/g)]
+        .filter((m) => (m[1] ?? "").includes('scope="col"'))
+        .map((m) => textOf(m[2] ?? ""));
+      expect(heads[2]).toBe(head);
+      expect(heads).toHaveLength(8);
     });
 
     it("sets numbers in tabular figures", () => {
@@ -671,6 +706,15 @@ describe("the week still running", () => {
     expect(textOf(/<caption[^>]*>([\s\S]*?)<\/caption>/.exec(html)![1]!)).toContain("Nov 23 – Nov 29, 2026");
     expect(rowsOf(html)[0]!.cells[2]!.text).toContain("Stand-in 2026-11-23");
     expect(textOf(html).toLowerCase()).toContain("week in progress");
+  });
+
+  it("labels the running week \"so far\" in the week list, and no other week", async () => {
+    const { html } = await page("week=2026-11-23", "inProgress");
+    const form = elementOf(html, "form", /method="get"/i)!;
+    const labels = [...form.matchAll(/<option\b[^>]*>([\s\S]*?)<\/option>/g)].map((m) => textOf(m[1] ?? ""));
+    expect(labels[0]).toBe("Nov 23 – Nov 29, 2026 (so far)");
+    expect(labels.filter((label) => label.includes("(so far)"))).toHaveLength(1);
+    expect(form).not.toContain("(in progress)");
   });
 
   it("opens on the running week, with a note, when it is the only week", async () => {

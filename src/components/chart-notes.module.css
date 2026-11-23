@@ -1,33 +1,38 @@
+/* A message that takes the place of the table. A small square of signal colour marks the title, like a lamp on a front panel. */
 .message {
-  margin-top: 1.5rem;
-  padding: 1.25rem 1.25rem 0.5rem;
+  margin-top: 1.75rem;
+  padding: 1.5rem 1.25rem;
   border: 1px solid var(--rule);
-  border-left: 4px solid var(--signal);
+  background: var(--wash);
 }
 
 .messageTitle {
+  composes: lamp from "./shared.module.css";
   margin: 0 0 0.5rem;
   font-family: var(--font-mono);
   font-size: 1.25rem;
   font-weight: 600;
   letter-spacing: -0.01em;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
 }
 
-.message p + p {
-  margin-top: 0.25rem;
+.actions {
+  margin-top: 1.25rem;
 }
 
+/* The way on is a button-sized link, like the week links, so it is a 44 px target. */
 .action {
-  display: inline-block;
-  padding: 0.75rem 0;
-  color: var(--ink);
-  font-family: var(--font-mono);
-  font-size: 0.9375rem;
+  composes: control hover from "./shared.module.css";
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 1rem;
   font-weight: 600;
-  text-underline-offset: 0.25em;
+  text-decoration: none;
 }
 
 .progress {
+  composes: lamp from "./shared.module.css";
   max-width: none;
   margin-top: 1rem;
   padding: 0.75rem 1rem;
@@ -36,7 +41,7 @@
 }
 
 .rules {
-  margin-top: 2.5rem;
+  margin-top: 3rem;
   padding-top: 1.25rem;
   border-top: 1px solid var(--rule);
 }
@@ -56,29 +61,40 @@
   margin: 0;
   padding: 0;
   color: var(--muted);
+  font-size: 0.9375rem;
   list-style: none;
 }
 
 .key {
-  margin-top: 0.75rem;
-  color: var(--faint);
+  margin-top: 1rem;
+  color: var(--muted);
   font-size: 0.875rem;
+}
+
+@media (min-width: 48rem) {
+  .rulesList {
+    grid-template-columns: repeat(2, minmax(0, 24rem));
+    column-gap: 2rem;
+  }
 }
 
 .emptyWeek {
-  margin-top: 1.5rem;
+  margin-top: 2rem;
 }
 
 .emptyCaption {
-  color: var(--muted);
-  font-family: var(--font-mono);
-  font-size: 0.875rem;
-  letter-spacing: 0.02em;
+  composes: heading from "./shared.module.css";
 }
 
+/*
+ * An empty slot is dashed, as the disabled week link is. It uses the muted ink and not the rule colour of that link,
+ * because this box carries the message and the link is only switched off. The hollow square is the lamp, switched off.
+ */
 .emptyText {
+  composes: lamp lampOff from "./shared.module.css";
+  max-width: none;
   margin-top: 0.75rem;
-  padding: 1.25rem;
-  border: 1px dashed var(--rule);
+  padding: 2rem 1.25rem;
+  border: 1px dashed var(--muted);
   color: var(--ink);
 }

@@ -9,13 +9,20 @@ import {
 import type { ChartKind, ChartRow } from "../lib/charts";
 import styles from "./chart-table.module.css";
 
-const COLUMNS = ["Rank", "Move", "Title", "Last week", "Peak", "Weeks", "Plays", "Minutes"] as const;
+/** The first column is named for what the chart ranks. */
+const NAME_COLUMN: Record<ChartKind, string> = { track: "Title", artist: "Artist", album: "Album" };
+
+function columnsFor(kind: ChartKind): string[] {
+  return ["Rank", "Move", NAME_COLUMN[kind], "Last week", "Peak", "Weeks", "Plays", "Minutes"];
+}
 
 const count = new Intl.NumberFormat("en-US");
 
 function Move({ row }: { row: ChartRow }) {
   const flag = flagOf(row);
-  if (flag !== null) return <span className={styles.flag}>{flag}</span>;
+  if (flag !== null) {
+    return <span className={`${styles.flag} ${flag === "NEW" ? styles.flagNew : styles.flagBack}`}>{flag}</span>;
+  }
 
   const { direction, steps } = movementOf(row);
   const places = `${steps} ${steps === 1 ? "place" : "places"}`;
@@ -23,26 +30,34 @@ function Move({ row }: { row: ChartRow }) {
     case "up":
       return (
         <>
-          <span aria-hidden="true">{"▲"} {steps}</span>
+          <span aria-hidden="true">
+            <span className={styles.glyph}>{"▲"}</span>
+            {steps}
+          </span>
           <span className={styles.sr}>Up {places}</span>
         </>
       );
     case "down":
       return (
         <>
-          <span aria-hidden="true">{"▼"} {steps}</span>
+          <span aria-hidden="true">
+            <span className={styles.glyph}>{"▼"}</span>
+            {steps}
+          </span>
           <span className={styles.sr}>Down {places}</span>
         </>
       );
     case "same":
       return (
         <>
-          <span aria-hidden="true">=</span>
+          <span aria-hidden="true" className={styles.same}>
+            =
+          </span>
           <span className={styles.sr}>No change</span>
         </>
       );
     default:
-      return <span>{"–"}</span>;
+      return <span className={styles.same}>{"–"}</span>;
   }
 }
 
@@ -60,7 +75,7 @@ export function ChartTable({ kind, week, rows }: { kind: ChartKind; week: string
       </caption>
       <thead role="rowgroup" className={styles.head}>
         <tr role="row">
-          {COLUMNS.map((name) => (
+          {columnsFor(kind).map((name) => (
             <th key={name} scope="col" role="columnheader">
               {name}
             </th>
