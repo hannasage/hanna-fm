@@ -16,7 +16,8 @@
     "test": "vitest run",
     "db:start": "supabase start",
     "db:stop": "supabase stop",
-    "db:reset": "supabase db reset"
+    "db:reset": "supabase db reset",
+    "db:seed-fake": "node scripts/seed-fake-plays.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.119.2",
