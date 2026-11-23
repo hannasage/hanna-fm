@@ -1,10 +1,5 @@
-import {
-  PUBLIC_DELAY_DAYS,
-  parseChartQuery,
-  toChartBounds,
-  toChartRows,
-  weekInRange,
-} from "@/lib/charts";
+import { CHART_TIMEOUT_MS, fetchChartBounds, fetchChartRows } from "@/lib/chart-queries";
+import { parseChartQuery, weekInRange } from "@/lib/charts";
 import { failureReason } from "@/lib/failure-reason";
 import { createServerSupabase } from "@/lib/supabase/server";
 
@@ -16,12 +11,6 @@ export const dynamic = "force-dynamic";
  */
 const OK_HEADERS = { "Cache-Control": "public, s-maxage=300, stale-while-revalidate=600" };
 const ERROR_HEADERS = { "Cache-Control": "no-store" };
-
-/**
- * Each database call gets this long. The chart query runs over every play up to the week, so it gets more
- * time than a health check. The functions stop themselves at 5 seconds, so this ends the wait, not the query.
- */
-const CHART_TIMEOUT_MS = 8_000;
 
 export async function GET(request: Request): Promise<Response> {
   const query = parseChartQuery(new URL(request.url).searchParams);
@@ -35,11 +24,7 @@ export async function GET(request: Request): Promise<Response> {
     const db = createServerSupabase(CHART_TIMEOUT_MS);
 
     // The database holds the clock and the week rules, so the range and the default week come from it.
-    const { data: boundsData } = await db
-      .rpc("chart_bounds", { p_kind: query.kind, p_delay_days: PUBLIC_DELAY_DAYS })
-      .retry(false)
-      .throwOnError();
-    const bounds = toChartBounds(boundsData);
+    const bounds = await fetchChartBounds(db, query.kind);
 
     let week: string;
     if (query.week === null) {
@@ -67,15 +52,7 @@ export async function GET(request: Request): Promise<Response> {
       week = query.week;
     }
 
-    const { data } = await db
-      .rpc("chart_weekly", {
-        p_week: week,
-        p_kind: query.kind,
-        p_limit: query.limit,
-        p_delay_days: PUBLIC_DELAY_DAYS,
-      })
-      .retry(false)
-      .throwOnError();
+    const rows = await fetchChartRows(db, week, query.kind, query.limit);
 
     return Response.json(
       {
@@ -83,7 +60,7 @@ export async function GET(request: Request): Promise<Response> {
         first_week: bounds.firstWeek,
         latest_week: bounds.latestWeek,
         kind: query.kind,
-        rows: toChartRows(data),
+        rows,
       },
       { status: 200, headers: OK_HEADERS },
     );
