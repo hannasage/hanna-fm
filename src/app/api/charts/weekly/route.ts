@@ -52,8 +52,8 @@ export async function GET(request: Request): Promise<Response> {
       }
       week = bounds.latestWeek;
     } else {
-      // The range needs the first qualifying week, which only the database knows. Checking it before
-      // the query would mean guessing a bound, so it stays here and costs one cached-shape query.
+      // The lower bound is the first week of a play the chart counts, which only the database knows.
+      // The check stays after the query, so no 400 can tell a caller more than the chart itself shows.
       if (!weekInRange(query.week, bounds)) {
         return Response.json({ status: "bad_request" }, { status: 400, headers: ERROR_HEADERS });
       }

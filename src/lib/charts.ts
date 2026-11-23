@@ -6,8 +6,8 @@ import { ChartShapeError } from "./failure-reason";
  */
 
 /**
- * The one setting for the public delay. Plays from the last whole Eastern day or more are hidden:
- * the database snaps the cutoff to the start of the Eastern day this many days back, and never closer
+ * The one setting for the public delay, in Eastern calendar days. It must be at least 1; the database refuses less.
+ * The database snaps the cutoff to the start of the Eastern day this many dates back, and never closer
  * than 24 hours. A chart number therefore changes only at Eastern midnight.
  */
 export const PUBLIC_DELAY_DAYS = 1;
