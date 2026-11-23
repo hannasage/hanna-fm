@@ -11,11 +11,14 @@
 --   * An album chart leaves out plays that have no album.
 --
 -- What is public:
---   * Plays newer than the public delay are hidden. The delay is whole Eastern days: chart_cutoff
---     snaps to the start of an Eastern calendar day, so every number on a chart moves only at Eastern
---     midnight and no single play enters a total at its own time. The cutoff is never closer than
---     24 hours to the clock, even on the day a clock change makes the day before 23 hours long.
+--   * Plays newer than the public delay are hidden. The delay is whole Eastern calendar days: chart_cutoff
+--     is the start of the Eastern day that many dates before today, so every number on a chart moves only
+--     at Eastern midnight, and a clock change adds or removes no day. No single play enters a total at its
+--     own time. A delay under 1 day is refused with an error. The cutoff is also never closer than 24 hours
+--     to the clock, so on the Monday after the clock moves forward it goes back one more day.
 --   * Minutes are shown in whole minutes. Ranking still uses the exact sum.
+--   * The first week and the latest week come from the plays the chart counts, under the same cutoff and the
+--     same rules. A play the chart hides therefore never shows in where an out-of-range week turns into a chart.
 --
 -- Rank: plays, then exact minutes (null ms_played adds none), then name without regard to case,
 -- then name, then key. Peak and weeks on chart cover every week up to and including the one asked for.
@@ -25,26 +28,30 @@
 -- The two functions that read plays stop a query at 5 seconds. PostgREST applies this setting
 -- when it calls the function, so a request that the site gave up on cannot leave a long query running.
 
--- The newest instant the public may see: the start of the Eastern day p_delay_days days before today,
--- or earlier when a day was shorter than 24 hours.
+-- The newest instant the public may see: the start of the Eastern day p_delay_days dates before today,
+-- or one day earlier when that day-start would be under 24 hours ago. Refuses a delay under 1 day.
 create function public.chart_cutoff(
   p_now        timestamptz,
   p_delay_days integer
 )
 returns timestamptz
-language sql
+language plpgsql
 stable
 set search_path = ''
 as $$
-  select date_trunc(
-           'day',
-           ((date_trunc('day', p_now at time zone 'America/New_York') at time zone 'America/New_York')
-              - p_delay_days * interval '24 hours') at time zone 'America/New_York'
-         ) at time zone 'America/New_York'
+begin
+  if p_delay_days is null or p_delay_days < 1 then
+    raise exception 'the public delay must be at least 1 day' using errcode = '22023';
+  end if;
+  return least(
+    ((p_now at time zone 'America/New_York')::date - p_delay_days)::timestamp at time zone 'America/New_York',
+    date_trunc('day', (p_now - interval '24 hours') at time zone 'America/New_York') at time zone 'America/New_York'
+  );
+end
 $$;
 
--- The first stored week, the latest week with a play the chart would count, and the current week.
--- first_week is null when no play is stored. latest_week is null when no play qualifies.
+-- The first and the latest week with a play the chart would count, and the current week.
+-- Both are null when no play qualifies. A play that is hidden or too short moves neither.
 create function public.chart_bounds(
   p_kind       text,
   p_delay_days integer,
@@ -55,22 +62,29 @@ returns table (
   latest_week  date,
   current_week date
 )
-language sql
+language plpgsql
 stable
 set search_path = ''
 set statement_timeout = '5s'
 as $$
+#variable_conflict use_column
+declare
+  v_cutoff timestamptz := public.chart_cutoff(p_now, p_delay_days);
+begin
+  return query
   select
     (select date_trunc('week', min(p.ended_at) at time zone 'America/New_York')::date
-       from public.plays p),
-    (select date_trunc('week', p.ended_at at time zone 'America/New_York')::date
        from public.plays p
-      where p.ended_at <= public.chart_cutoff(p_now, p_delay_days)
+      where p.ended_at <= v_cutoff
         and (p.ms_played is null or p.ms_played >= 30000)
-        and (p_kind <> 'album' or p.album_name is not null)
-      order by p.ended_at desc
-      limit 1),
-    date_trunc('week', p_now at time zone 'America/New_York')::date
+        and (p_kind <> 'album' or p.album_name is not null)),
+    (select date_trunc('week', max(p.ended_at) at time zone 'America/New_York')::date
+       from public.plays p
+      where p.ended_at <= v_cutoff
+        and (p.ms_played is null or p.ms_played >= 30000)
+        and (p_kind <> 'album' or p.album_name is not null)),
+    date_trunc('week', p_now at time zone 'America/New_York')::date;
+end
 $$;
 
 create function public.chart_weekly(
@@ -90,11 +104,16 @@ returns table (
   peak_rank      integer,
   weeks_on_chart integer
 )
-language sql
+language plpgsql
 stable
 set search_path = ''
 set statement_timeout = '5s'
 as $$
+#variable_conflict use_column
+declare
+  v_cutoff timestamptz := public.chart_cutoff(p_now, p_delay_days);
+begin
+  return query
   with weekly as (
     select date_trunc('week', p.ended_at at time zone 'America/New_York')::date as week,
            -- An album key hashes the album and the artist apart, so no pair of names can make
@@ -112,7 +131,7 @@ as $$
            count(*)::integer as plays,
            coalesce(sum(p.ms_played), 0) as ms
       from public.plays p
-     where p.ended_at <= public.chart_cutoff(p_now, p_delay_days)
+     where p.ended_at <= v_cutoff
        and p.ended_at <  ((p_week + 7)::timestamp at time zone 'America/New_York')
        -- A poll row has a null ms_played. The 30 second rule cannot be applied to it, because the
        -- poller never learns the length of a play. It counts as a play and adds no minutes.
@@ -145,7 +164,8 @@ as $$
     from history h
    where h.week = p_week
    order by h.rnk
-   limit p_limit
+   limit p_limit;
+end
 $$;
 
 revoke all on function public.chart_cutoff(timestamptz, integer)

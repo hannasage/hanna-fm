@@ -284,12 +284,38 @@ describe("GET /api/charts/weekly: the range of weeks", () => {
     expect((await getChart("week=2099-01-05")).status).toBe(400);
   });
 
-  it("measures the first week from a play inside the delay too, because the week is all it shows", async () => {
+  it("does not let a play inside the delay set the first week, so no explicit week is open", async () => {
     await clearPlays();
     await insertPlays([play("fresh", new Date(Date.now() - 3_600_000).toISOString())]);
 
-    expect((await getChart(`week=${await newYorkMonday(0)}`)).status).toBe(200);
+    expect((await getChart(`week=${await newYorkMonday(0)}`)).status).toBe(400);
     expect((await getChart(`week=${await newYorkMonday(-1)}`)).status).toBe(400);
+  });
+
+  it("does not let a play under 30 seconds, older than every visible play, move the lower bound", async () => {
+    await clearPlays();
+    await insertPlays([
+      play("short", "2026-01-06T12:00:00Z", { ms_played: 29_999 }),
+      play("visible", "2026-02-04T12:00:00Z"),
+    ]);
+
+    // The Monday of the short play is 2026-01-05. It is refused the same as any week before the first.
+    expect((await getChart("week=2026-01-05")).status).toBe(400);
+    expect((await getChart("week=2026-01-26")).status).toBe(400);
+    expect((await getChart("week=2026-02-02")).status).toBe(200);
+  });
+
+  it("does not let an album-less play, older than every album play, move the lower bound of an album chart", async () => {
+    await clearPlays();
+    await insertPlays([
+      play("single", "2026-01-06T12:00:00Z", { album_name: null }),
+      play("album", "2026-02-04T12:00:00Z"),
+    ]);
+
+    expect((await getChart("kind=album&week=2026-01-05")).status).toBe(400);
+    expect((await getChart("kind=album&week=2026-02-02")).status).toBe(200);
+    // For tracks the same play counts, so its week is open.
+    expect((await getChart("kind=track&week=2026-01-05")).status).toBe(200);
   });
 
   it("refuses every explicit week when no play is stored", async () => {
@@ -633,7 +659,8 @@ describe("GET /api/charts/weekly: the public delay, over HTTP", () => {
   });
 
   it("hides a recent play from a named week too", async () => {
-    await insertPlays([play("fresh", ago(2))]);
+    // The older play is two weeks back, so the current week is inside the stored range.
+    await insertPlays([play("old", ago(24 * 14)), play("fresh", ago(2))]);
     const c = await chart(`week=${await newYorkMonday(0)}`);
 
     expect(c.rows).toEqual([]);

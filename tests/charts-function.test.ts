@@ -60,6 +60,73 @@ describe("the public delay snaps to the start of the previous Eastern day", () =
     });
   });
 
+  // The delay counts Eastern calendar days, so a clock change adds or removes no day.
+  it.each<[string, number, string, string]>([
+    ["2 days, the day after spring forward", 2, "2026-03-09T04:00:00Z", "2026-03-07T05:00:00.000Z"],
+    ["2 days, two days after spring forward", 2, "2026-03-10T04:00:00Z", "2026-03-08T05:00:00.000Z"],
+    ["2 days, three days after spring forward", 2, "2026-03-11T04:00:00Z", "2026-03-09T04:00:00.000Z"],
+    ["3 days, three days after spring forward", 3, "2026-03-11T04:00:00Z", "2026-03-08T05:00:00.000Z"],
+    ["7 days, a week across spring forward", 7, "2026-03-12T04:00:00Z", "2026-03-05T05:00:00.000Z"],
+    ["2 days, midday on the fall back day", 2, "2026-11-01T16:00:00Z", "2026-10-30T04:00:00.000Z"],
+    ["2 days, the Monday after fall back", 2, "2026-11-02T05:00:00Z", "2026-10-31T04:00:00.000Z"],
+    ["2 days, the Tuesday after fall back", 2, "2026-11-03T05:00:00Z", "2026-11-01T04:00:00.000Z"],
+    ["3 days, the Wednesday after fall back", 3, "2026-11-04T05:00:00Z", "2026-11-01T04:00:00.000Z"],
+    ["7 days, a week across fall back", 7, "2026-11-05T05:00:00Z", "2026-10-29T04:00:00.000Z"],
+  ])("counts Eastern calendar days, not 24 hour blocks: %s", async (_label, days, now, expected) => {
+    await withDb(async (db) => {
+      const result = await db.query<{ cutoff: Date }>(
+        "select public.chart_cutoff($1::timestamptz, $2::int) as cutoff",
+        [now, days],
+      );
+      expect(result.rows[0]!.cutoff.toISOString()).toBe(expected);
+    });
+  });
+
+  it("is always an Eastern midnight, and always the stated number of dates back once the delay is over one day", async () => {
+    await withDb(async (db) => {
+      // Every hour of a year, for delays of 2 to 7 days. A drifting cutoff would land on 23:00 or 01:00.
+      const result = await db.query<{ bad: string }>(
+        `select count(*) as bad
+           from generate_series('2026-01-01T00:00:00Z'::timestamptz, '2026-12-31T00:00:00Z', interval '1 hour') as t,
+                generate_series(2, 7) as d
+          where (public.chart_cutoff(t, d) at time zone 'America/New_York')::time <> '00:00'
+             or (public.chart_cutoff(t, d) at time zone 'America/New_York')::date
+                <> (t at time zone 'America/New_York')::date - d`,
+      );
+      expect(Number(result.rows[0]!.bad)).toBe(0);
+    });
+  });
+
+  it.each<[string, number | null]>([
+    ["zero", 0],
+    ["a negative number", -1],
+    ["null", null],
+  ])("refuses a delay of %s days", async (_label, days) => {
+    await withDb(async (db) => {
+      await expect(db.query("select public.chart_cutoff('2026-02-18T15:00:00Z'::timestamptz, $1::int)", [days])).rejects.toMatchObject({
+        message: expect.stringContaining("delay"),
+      });
+    });
+  });
+
+  it("accepts a delay of exactly one day", async () => {
+    await withDb(async (db) => {
+      const result = await db.query<{ cutoff: Date }>("select public.chart_cutoff('2026-02-18T15:00:00Z'::timestamptz, 1) as cutoff");
+      expect(result.rows[0]!.cutoff.toISOString()).toBe("2026-02-17T05:00:00.000Z");
+    });
+  });
+
+  it.each([0, -1])("makes chart_weekly and chart_bounds refuse a delay of %i days, even with no plays stored", async (days) => {
+    await withDb(async (db) => {
+      await expect(
+        db.query("select * from public.chart_weekly('2026-02-02'::date, 'track', 25, $1::int, '2026-02-18T15:00:00Z'::timestamptz)", [days]),
+      ).rejects.toMatchObject({ message: expect.stringContaining("delay") });
+      await expect(
+        db.query("select * from public.chart_bounds('track', $1::int, '2026-02-18T15:00:00Z'::timestamptz)", [days]),
+      ).rejects.toMatchObject({ message: expect.stringContaining("delay") });
+    });
+  });
+
   it("always holds a play back for at least 24 hours", async () => {
     await withDb(async (db) => {
       // Every hour across two clock changes and a month end. The gap is never under 24 hours.
@@ -217,14 +284,70 @@ describe("chart_bounds with a fixed clock", () => {
     });
   });
 
-  it("keeps the first week when every play is hidden or short, and gives no latest week", async () => {
+  it("gives no first week and no latest week when every play is hidden or short", async () => {
     await insertPlays([play("fresh", "2026-03-11T12:00:00Z"), play("short", "2026-03-04T12:00:00Z", { ms_played: 1 })]);
     await withDb(async (db) => {
       expect(await boundsAt(db, "2026-03-12T15:00:00Z")).toEqual({
-        first_week: "2026-03-02",
+        first_week: null,
         latest_week: null,
         current_week: "2026-03-09",
       });
+    });
+  });
+
+  it("does not let a play under 30 seconds, older than every visible play, move the first week", async () => {
+    await insertPlays([
+      play("short", "2026-01-06T12:00:00Z", { ms_played: 29_999 }),
+      play("visible", "2026-02-18T12:00:00Z"),
+    ]);
+    await withDb(async (db) => {
+      expect((await boundsAt(db, "2026-03-12T15:00:00Z")).first_week).toBe("2026-02-16");
+    });
+  });
+
+  it("lets a play of exactly 30 seconds, and a poll row with no ms_played, set the first week", async () => {
+    await insertPlays([
+      play("exact", "2026-01-06T12:00:00Z", { ms_played: 30_000 }),
+      play("poll", "2026-01-20T12:00:00Z", { source: "poll", ms_played: null }),
+    ]);
+    await withDb(async (db) => {
+      expect((await boundsAt(db, "2026-03-12T15:00:00Z")).first_week).toBe("2026-01-05");
+    });
+    await clearPlays();
+    await insertPlays([
+      play("short", "2026-01-06T12:00:00Z", { ms_played: 29_999 }),
+      play("poll", "2026-01-20T12:00:00Z", { source: "poll", ms_played: null }),
+    ]);
+    await withDb(async (db) => {
+      expect((await boundsAt(db, "2026-03-12T15:00:00Z")).first_week).toBe("2026-01-19");
+    });
+  });
+
+  it("does not let an album-less play, older than every album play, move the first week of an album chart", async () => {
+    await insertPlays([
+      play("single", "2026-01-06T12:00:00Z", { album_name: null }),
+      play("album", "2026-02-18T12:00:00Z"),
+    ]);
+    await withDb(async (db) => {
+      expect((await boundsAt(db, "2026-03-12T15:00:00Z", "album")).first_week).toBe("2026-02-16");
+      // The same play counts for a track chart and an artist chart.
+      expect((await boundsAt(db, "2026-03-12T15:00:00Z", "track")).first_week).toBe("2026-01-05");
+      expect((await boundsAt(db, "2026-03-12T15:00:00Z", "artist")).first_week).toBe("2026-01-05");
+    });
+  });
+
+  it("does not let a play inside the delay set the first week", async () => {
+    // The cutoff at this moment is 2026-03-11 00:00 EDT. The only play is a second after it.
+    await insertPlays([play("fresh", "2026-03-11T04:00:01Z")]);
+    await withDb(async (db) => {
+      expect((await boundsAt(db, "2026-03-12T15:00:00Z")).first_week).toBeNull();
+    });
+  });
+
+  it("takes the first week from a play exactly at the cutoff", async () => {
+    await insertPlays([play("at", "2026-03-11T04:00:00Z")]);
+    await withDb(async (db) => {
+      expect((await boundsAt(db, "2026-03-12T15:00:00Z")).first_week).toBe("2026-03-09");
     });
   });
 
