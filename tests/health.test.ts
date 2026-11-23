@@ -1,13 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { testEnv } from "./support/env";
+import { readSiteLog, testEnv, waitForSiteLog, type SiteName } from "./support/env";
+
+async function getHealth(site: SiteName) {
+  return fetch(`${testEnv().sites[site]}/api/health`);
+}
 
 describe("GET /api/health over HTTP", () => {
   it("reports healthy when the database answers", async () => {
-    const res = await fetch(`${testEnv().healthySiteUrl}/api/health`);
+    const res = await getHealth("healthy");
 
     expect(res.status).toBe(200);
     expect(res.headers.get("cache-control")).toContain("no-store");
     expect(await res.json()).toEqual({ status: "healthy" });
+    expect(readSiteLog("healthy")).not.toContain("health check failed");
   });
 
   it("reads a real row that the fixture loaded", async () => {
@@ -22,26 +27,42 @@ describe("GET /api/health over HTTP", () => {
     expect(rows[0]?.label).toBe("synthetic fixture row");
   });
 
-  it("reports unhealthy when the database refuses the connection", async () => {
-    const res = await fetch(`${testEnv().refusedSiteUrl}/api/health`);
+  describe.each<[string, SiteName, string]>([
+    ["the database refuses the connection", "refused", "name=TypeError code=ECONNREFUSED"],
+    ["the database never answers", "hanging", "name=TimeoutError code=none"],
+    ["the database rejects the key (PostgREST 401)", "badKey", "name=PostgrestError code=PGRST301"],
+    ["a database variable is missing", "missingEnv", "name=ServerConfigError code=SERVER_ENV_MISSING"],
+  ])("when %s", (_label, site, reason) => {
+    it("answers 503 with the same unhealthy body", async () => {
+      const started = Date.now();
+      const res = await getHealth(site);
 
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ status: "unhealthy" });
-  });
+      expect(res.status).toBe(503);
+      expect(res.headers.get("cache-control")).toContain("no-store");
+      expect(await res.json()).toEqual({ status: "unhealthy" });
+      expect(Date.now() - started).toBeLessThan(8_000);
+    });
 
-  it("reports unhealthy when the database never answers", async () => {
-    const started = Date.now();
-    const res = await fetch(`${testEnv().hangingSiteUrl}/api/health`);
+    it("logs a sanitized reason on the server", async () => {
+      await getHealth(site);
+      const log = await waitForSiteLog(site, "health check failed");
 
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ status: "unhealthy" });
-    expect(Date.now() - started).toBeLessThan(8_000);
-  });
+      expect(log).toContain(`health check failed: ${reason}`);
+    });
 
-  it("does not leak error details when unhealthy", async () => {
-    const res = await fetch(`${testEnv().refusedSiteUrl}/api/health`);
-    const text = await res.text();
+    it("leaks no secret, address or message to the caller or the log", async () => {
+      const { secrets, apiUrl } = testEnv();
+      const res = await getHealth(site);
+      const body = await res.text();
+      const log = await waitForSiteLog(site, "health check failed");
 
-    expect(text).not.toMatch(/ECONNREFUSED|127\.0\.0\.1|fetch failed|stack/i);
+      const leaked = secrets
+        .filter(({ value }) => body.includes(value) || log.includes(value))
+        .map(({ name }) => name);
+      expect(leaked).toEqual([]);
+      expect(body.includes("not-a-real-key") || log.includes("not-a-real-key")).toBe(false);
+      expect((body + log).includes(new URL(apiUrl).host)).toBe(false);
+      expect(/fetch failed|Expected 3 parts|Caused by/i.test(body + log)).toBe(false);
+    });
   });
 });

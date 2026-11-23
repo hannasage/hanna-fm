@@ -1,8 +1,6 @@
 import type { NextConfig } from "next";
 
-const nextConfig: NextConfig = {
-  // The tests start several copies of the site, each with its own build folder.
-  distDir: process.env.NEXT_DIST_DIR ?? ".next",
-};
+// No `env` block and no public runtime config: nothing from the server reaches the browser by this file.
+const nextConfig: NextConfig = {};
 
 export default nextConfig;

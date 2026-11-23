@@ -33,16 +33,9 @@
     "**/*.ts",
     "**/*.tsx",
     ".next/types/**/*.ts",
-    ".next/dev/types/**/*.ts",
-    ".next-test-healthy/types/**/*.ts",
-    ".next-test-healthy/dev/types/**/*.ts",
-    ".next-test-refused/types/**/*.ts",
-    ".next-test-refused/dev/types/**/*.ts",
-    ".next-test-hanging/types/**/*.ts",
-    ".next-test-hanging/dev/types/**/*.ts"
+    ".next/dev/types/**/*.ts"
   ],
   "exclude": [
-    "node_modules",
-    ".next-test-*"
+    "node_modules"
   ]
 }
