@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
+import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SeedRefusedError, assertLocalUrl, easternDate, generateFakePlays } from "./fake-plays.ts";
 
@@ -79,11 +80,21 @@ export function resolveTarget(env: Env, readStatus: () => string = runStatus): T
 }
 
 /**
- * One request to the plays table. A redirect is an error: the key travels in a header, and a process that
- * is not the database must not be able to send it on to another host.
+ * One request to the plays table. It returns the rows the database answered with, read inside the same guard
+ * as the request, so a stalled or cut-off body is reported with how many plays were stored so far.
+ * A redirect is an error: the key travels in a header, and a process that is not the database must not
+ * be able to send it on to another host.
  */
-async function request(target: Target, method: "POST" | "DELETE", query: string, prefer: string, body: string | undefined, done: number) {
+async function request(
+  target: Target,
+  method: "POST" | "DELETE",
+  query: string,
+  prefer: string,
+  body: string | undefined,
+  done: number,
+): Promise<unknown[]> {
   let response: Response;
+  let rows: unknown;
   try {
     response = await fetch(`${target.origin}/rest/v1/plays?${query}`, {
       method,
@@ -97,6 +108,7 @@ async function request(target: Target, method: "POST" | "DELETE", query: string,
       body,
       signal: AbortSignal.timeout(30_000),
     });
+    if (response.ok) rows = await response.json();
   } catch (error) {
     const cause = (error as { cause?: { code?: string; message?: string } }).cause;
     const why = cause?.code ?? cause?.message ?? (error as Error).name;
@@ -105,18 +117,17 @@ async function request(target: Target, method: "POST" | "DELETE", query: string,
   if (!response.ok) {
     throw new SeedRequestError(`The database refused a request (HTTP ${response.status}).`, done);
   }
-  return response;
+  if (!Array.isArray(rows)) throw new SeedRequestError("The database answered with a shape the seed does not know.", done);
+  return rows;
 }
 
 async function deleteFakePlays(target: Target): Promise<number> {
-  const response = await request(target, "DELETE", `track_uri=${FAKE_URI_FILTER}&select=id`, "return=representation", undefined, 0);
-  const removed = (await response.json()) as unknown;
-  if (!Array.isArray(removed)) throw new SeedRequestError("The database answered with a shape the seed does not know.", 0);
+  const removed = await request(target, "DELETE", `track_uri=${FAKE_URI_FILTER}&select=id`, "return=representation", undefined, 0);
   return removed.length;
 }
 
 async function insertBatch(target: Target, rows: unknown[], done: number): Promise<number> {
-  const response = await request(
+  const stored = await request(
     target,
     "POST",
     "on_conflict=track_uri,ended_at&select=id",
@@ -124,8 +135,6 @@ async function insertBatch(target: Target, rows: unknown[], done: number): Promi
     JSON.stringify(rows),
     done,
   );
-  const stored = (await response.json()) as unknown;
-  if (!Array.isArray(stored)) throw new SeedRequestError("The database answered with a shape the seed does not know.", done);
   return stored.length;
 }
 
@@ -141,12 +150,16 @@ export async function seedFakePlays(
   for (let i = 0; i < plays.length; i += BATCH) {
     inserted += await insertBatch(target, plays.slice(i, i + BATCH), inserted);
   }
+  // Right after a delete, every play must go in. A lower number means the database dropped rows.
+  if (inserted !== plays.length) {
+    throw new Error(`The database stored ${inserted} of ${plays.length} fake plays. Run the command again to start clean.`);
+  }
   return { removed, inserted };
 }
 
 /**
  * True when this file is the one node was asked to run, even through a symlink.
- * A test sets VITEST and SEED_NOW to pin the clock. A person's own SEED_NOW is ignored.
+ * A test pins the clock with SEED_NOW, and only when Vitest has set VITEST to "true". A person's own SEED_NOW is ignored.
  */
 function isMain(): boolean {
   const entry = process.argv[1];
@@ -159,7 +172,7 @@ function isMain(): boolean {
 }
 
 function clock(env: Env): Date {
-  if (env.VITEST && env.SEED_NOW) {
+  if (env.VITEST === "true" && env.SEED_NOW) {
     const pinned = new Date(env.SEED_NOW);
     if (Number.isNaN(pinned.getTime())) throw new Error("SEED_NOW is not a date.");
     return pinned;
@@ -171,12 +184,16 @@ if (isMain()) {
   Promise.resolve()
     .then(() => seedFakePlays(process.env, clock(process.env)))
     .then(
-    ({ removed, inserted }) => {
-      console.log(`Fake plays: removed ${removed}, inserted ${inserted}.`);
-    },
-    (error: unknown) => {
-      console.error(error instanceof Error ? error.message : "The seed failed.");
-      process.exitCode = 1;
-    },
-  );
+      ({ removed, inserted }) => {
+        console.log(`Fake plays: removed ${removed}, inserted ${inserted}.`);
+      },
+      (error: unknown) => {
+        console.error(error instanceof Error ? error.message : "The seed failed.");
+        process.exitCode = 1;
+      },
+    );
+} else if (/^seed-fake-plays(\.ts)?$/.test(basename(process.argv[1] ?? ""))) {
+  // Someone ran this file and the check said it is not the main file. Say so, so it is never a silent no-op.
+  console.error("The seed did not start: this file was not recognised as the one node was asked to run.");
+  process.exitCode = 1;
 }

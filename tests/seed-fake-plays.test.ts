@@ -121,8 +121,8 @@ describe("the seed command", () => {
     expect(await countPlays()).toBeGreaterThan(5_000);
   });
 
-  it("ignores SEED_NOW unless a test set VITEST", async () => {
-    const result = await runSeed({ ...pinned("2020-01-08T16:00:00Z"), VITEST: undefined });
+  it.each([undefined, "1", "yes"])("ignores SEED_NOW when VITEST is %s, not \"true\"", async (vitest) => {
+    const result = await runSeed({ ...pinned("2020-01-08T16:00:00Z"), VITEST: vitest });
     expect(result.status, result.out).toBe(0);
     const last = await withDb(async (db) =>
       (await db.query<{ last: Date }>("select max(ended_at) as last from public.plays")).rows[0]!.last,
@@ -196,6 +196,53 @@ describe("a database that is not the database", () => {
     } finally {
       await bouncer.close();
       await elsewhere.close();
+    }
+  });
+
+  it.each([
+    ["a body that stops halfway", (res: import("node:http").ServerResponse) => {
+      res.writeHead(200, { "Content-Type": "application/json", "Content-Length": "5000" });
+      res.write("[{\"id\":1},");
+      setTimeout(() => res.destroy(), 30);
+    }],
+    ["a body that is not JSON", (res: import("node:http").ServerResponse) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end("this is not json");
+    }],
+    ["an answer that is not a list", (res: import("node:http").ServerResponse) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end("{\"ok\":true}");
+    }],
+  ])("says how many plays were stored when it reads %s", async (_label, badBody) => {
+    const stub = await stubServer((req, hit, res) => {
+      if (hit === 3) return badBody(res);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(req.method === "DELETE" ? "[]" : JSON.stringify(Array.from({ length: 500 }, (_, i) => ({ id: i }))));
+    });
+    try {
+      const result = await runSeed({ SUPABASE_URL: stub.url, SUPABASE_SERVICE_ROLE_KEY: env.serviceRoleKey, SEED_NOW: "2026-04-08T16:00:00Z" });
+      expect(result.status).toBe(1);
+      // Request 1 is the delete, request 2 stores 500, request 3 cannot be read.
+      expect(result.out).toContain("Stored before the failure: 500");
+      expect(result.out).not.toContain("Fake plays:");
+    } finally {
+      await stub.close();
+    }
+  });
+
+  it("fails loudly when the database stores fewer plays than were sent", async () => {
+    const stub = await stubServer((req, _hit, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      // Every insert answers with one row fewer than the batch held.
+      res.end(req.method === "DELETE" ? "[]" : JSON.stringify(Array.from({ length: 499 }, (_, i) => ({ id: i }))));
+    });
+    try {
+      const result = await runSeed({ SUPABASE_URL: stub.url, SUPABASE_SERVICE_ROLE_KEY: env.serviceRoleKey, SEED_NOW: "2026-04-08T16:00:00Z" });
+      expect(result.status).toBe(1);
+      expect(result.out).toMatch(/stored \d+ of \d+ fake plays/);
+      expect(result.out).not.toContain("Fake plays:");
+    } finally {
+      await stub.close();
     }
   });
 
