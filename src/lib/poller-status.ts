@@ -13,9 +13,19 @@ export const LOGIN_WARN_DAYS = 150;
 export const LOGIN_LIFETIME_DAYS = 180;
 /** The poller_state key that holds the date or instant of the last Spotify authorization. */
 export const LOGIN_STATE_KEY = "spotify_authorized_at";
+/** With no ok run that stored a play for this many days, the feed may be running but empty. */
+export const STORE_QUIET_DAYS = 7;
+/** A run that finished more than this many minutes ahead of the clock is a clock fault. */
+export const CLOCK_SKEW_MINUTES = 5;
 
 const HOUR_MS = 3_600_000;
 const DAY_MS = 24 * HOUR_MS;
+const CLOCK_SKEW_MS = CLOCK_SKEW_MINUTES * 60_000;
+
+/** The latest finish time a run may have and still be trusted, for a clock reading of `now`. */
+export function newestTrustedFinish(now: number): number {
+  return now + CLOCK_SKEW_MS;
+}
 
 export type PollerRun = {
   outcome: "ok" | "failed";
@@ -31,33 +41,68 @@ export type PollerRuns = {
   newestOk: PollerRun | null;
   /** The failed run that finished last. */
   lastFailure: PollerRun | null;
+  /** The ok run that finished last and stored more than zero plays. */
+  lastStored: PollerRun | null;
 };
 
 export type PollerRunStatus = {
   status: "no_runs" | "ok" | "stale" | "failing";
   last_ok_at: string | null;
   last_failure: { at: string; kind: string } | null;
+  last_stored_at: string | null;
 };
 
 export type LoginHealth = {
   state: "unknown" | "ok" | "expiring" | "expired";
-  days_since_authorized: number | null;
 };
 
-export function pollerStatus(runs: PollerRuns, now: number): PollerRunStatus {
+/** The fixed strings the `attention` array may hold, in the order they are listed. */
+export type Attention =
+  | "login_unknown"
+  | "login_expiring"
+  | "login_expired"
+  | "no_stores_recently"
+  | "clock_skew";
+
+export type PollerHealth = PollerRunStatus & {
+  login: LoginHealth;
+  attention: Attention[];
+};
+
+/** True when a run finished more than the allowed skew ahead of the clock. */
+function isAhead(run: PollerRun | null, now: number): boolean {
+  return run !== null && run.finishedAt > newestTrustedFinish(now);
+}
+
+/** A run the clock can trust, or null. A run ahead of the clock is ignored. */
+function trusted(run: PollerRun | null, now: number): PollerRun | null {
+  return run === null || isAhead(run, now) ? null : run;
+}
+
+const iso = (run: PollerRun | null): string | null =>
+  run ? new Date(run.finishedAt).toISOString() : null;
+
+export function pollerStatus(allRuns: PollerRuns, now: number): PollerRunStatus {
+  const runs: PollerRuns = {
+    latest: trusted(allRuns.latest, now),
+    newestOk: trusted(allRuns.newestOk, now),
+    lastFailure: trusted(allRuns.lastFailure, now),
+    lastStored: trusted(allRuns.lastStored, now),
+  };
   // After a success the poller may still hold an older failure, so both fields are always filled.
   const okRun = runs.newestOk ?? (runs.latest?.outcome === "ok" ? runs.latest : null);
-  const last_ok_at = okRun ? new Date(okRun.finishedAt).toISOString() : null;
+  const last_ok_at = iso(okRun);
+  const last_stored_at = iso(runs.lastStored);
   const last_failure =
     runs.lastFailure && runs.lastFailure.failureKind !== null
       ? { at: new Date(runs.lastFailure.finishedAt).toISOString(), kind: runs.lastFailure.failureKind }
       : null;
 
-  if (!runs.latest) return { status: "no_runs", last_ok_at, last_failure };
+  if (!runs.latest) return { status: "no_runs", last_ok_at, last_failure, last_stored_at };
   // A failure now outranks a late success, because it says why the poller is behind.
-  if (runs.latest.outcome === "failed") return { status: "failing", last_ok_at, last_failure };
+  if (runs.latest.outcome === "failed") return { status: "failing", last_ok_at, last_failure, last_stored_at };
   const stale = okRun !== null && now - okRun.finishedAt > STALE_AFTER_HOURS * HOUR_MS;
-  return { status: stale ? "stale" : "ok", last_ok_at, last_failure };
+  return { status: stale ? "stale" : "ok", last_ok_at, last_failure, last_stored_at };
 }
 
 const DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -82,16 +127,62 @@ function readMoment(value: string): number | null {
   return Number.isNaN(ms) ? null : ms;
 }
 
+/**
+ * `unknown` means the key is absent. A value that is there but unreadable, or in the future,
+ * cannot be trusted, and it is `expiring` so that someone looks at it.
+ */
 export function loginHealth(value: string | null | undefined, now: number): LoginHealth {
-  const unknown: LoginHealth = { state: "unknown", days_since_authorized: null };
-  if (typeof value !== "string") return unknown;
-  const authorizedAt = readMoment(value.trim());
-  // A date in the future cannot be a real authorization, so it is not trusted.
-  if (authorizedAt === null || authorizedAt > now) return unknown;
+  if (value === null || value === undefined) return { state: "unknown" };
+  const authorizedAt = typeof value === "string" ? readMoment(value.trim()) : null;
+  if (authorizedAt === null || authorizedAt > now) return { state: "expiring" };
   const days = Math.floor((now - authorizedAt) / DAY_MS);
   const state =
     days >= LOGIN_LIFETIME_DAYS ? "expired" : days >= LOGIN_WARN_DAYS ? "expiring" : "ok";
-  return { state, days_since_authorized: days };
+  return { state };
+}
+
+export type PollerHealthInput = {
+  runs: PollerRuns;
+  /** The stored login value, or null when the key is absent. */
+  loginValue: string | null;
+  /** True when the route found a run ahead of the clock, which its queries leave out. */
+  futureRunSeen: boolean;
+};
+
+/** Everything the route reports, from the rows it read and one reading of the clock. */
+export function pollerHealth(input: PollerHealthInput, now: number): PollerHealth {
+  const run = pollerStatus(input.runs, now);
+  const login = loginHealth(input.loginValue, now);
+  const attention: Attention[] = [];
+
+  if (login.state === "unknown") attention.push("login_unknown");
+  if (login.state === "expiring") attention.push("login_expiring");
+  if (login.state === "expired") attention.push("login_expired");
+
+  // Only a poller that is otherwise ok can be quiet. A stale or failing one has a worse flag already.
+  if (run.status === "ok") {
+    const stored = run.last_stored_at === null ? null : Date.parse(run.last_stored_at);
+    if (stored === null || now - stored > STORE_QUIET_DAYS * DAY_MS) {
+      attention.push("no_stores_recently");
+    }
+  }
+
+  const skew =
+    input.futureRunSeen ||
+    [input.runs.latest, input.runs.newestOk, input.runs.lastFailure, input.runs.lastStored].some((r) =>
+      isAhead(r, now),
+    );
+  if (skew) attention.push("clock_skew");
+
+  return { ...run, login, attention };
+}
+
+/**
+ * 503 when the poller is behind (stale, failing, or no runs) or the login is expired, so a
+ * monitor on the status code raises an alarm. Every other case is 200, warnings included.
+ */
+export function httpStatusFor(health: PollerHealth): 200 | 503 {
+  return health.status !== "ok" || health.login.state === "expired" ? 503 : 200;
 }
 
 /**

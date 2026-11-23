@@ -82,17 +82,24 @@ type Status = {
   status: string;
   last_ok_at: string | null;
   last_failure: { at: string; kind: string } | null;
-  login: { state: string; days_since_authorized: number | null };
+  last_stored_at: string | null;
+  login: { state: string };
+  attention: string[];
 };
 
 async function getStatus(site: SiteName = "healthy", query = "") {
   return fetch(`${env.sites[site]}/api/poller/status${query}`);
 }
 
+/** The body, whatever the HTTP code. Tests that care about the code ask for it with `code()`. */
 async function status(): Promise<Status> {
   const res = await getStatus();
-  expect(res.status).toBe(200);
+  expect([200, 503]).toContain(res.status);
   return (await res.json()) as Status;
+}
+
+async function code(): Promise<number> {
+  return (await getStatus()).status;
 }
 
 /** The same instant, written the way the route writes it. */
@@ -105,21 +112,33 @@ afterAll(clearAll);
 beforeEach(clearAll);
 
 describe("GET /api/poller/status: the tables are empty", () => {
-  it("reports no_runs, no failure and an unknown login", async () => {
+  it("reports no_runs with 503, no failure and an unknown login", async () => {
     const res = await getStatus();
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(503);
     expect(await res.json()).toEqual({
       status: "no_runs",
       last_ok_at: null,
       last_failure: null,
-      login: { state: "unknown", days_since_authorized: null },
+      last_stored_at: null,
+      login: { state: "unknown" },
+      attention: ["login_unknown"],
     });
   });
 
-  it("can be cached for a minute by a shared cache", async () => {
+  it("is not cached when it answers 503", async () => {
     const res = await getStatus();
 
+    expect(res.status).toBe(503);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("can be cached for a minute by a shared cache when it answers 200", async () => {
+    await insertRuns([run("ok", MINUTE)]);
+
+    const res = await getStatus();
+
+    expect(res.status).toBe(200);
     expect(res.headers.get("cache-control")).toBe("public, s-maxage=60");
   });
 });
@@ -136,10 +155,11 @@ describe("GET /api/poller/status: run status", () => {
     expect(body.last_failure).toBeNull();
   });
 
-  it("reports ok for an ok run a little under two hours old", async () => {
+  it("answers 200 for an ok run a little under two hours old", async () => {
     await insertRuns([run("ok", 2 * HOUR - 2 * MINUTE)]);
 
     expect((await status()).status).toBe("ok");
+    expect(await code()).toBe(200);
   });
 
   it("reports stale for an ok run a little over two hours old", async () => {
@@ -151,6 +171,7 @@ describe("GET /api/poller/status: run status", () => {
     expect(body.status).toBe("stale");
     expect(body.last_ok_at).toBe(old.finished_at);
     expect(body.last_failure).toBeNull();
+    expect(await code()).toBe(503);
   });
 
   it("reports failing when the most recent run failed, and still gives the last ok time", async () => {
@@ -163,6 +184,7 @@ describe("GET /api/poller/status: run status", () => {
     expect(body.status).toBe("failing");
     expect(body.last_ok_at).toBe(ok.finished_at);
     expect(body.last_failure).toEqual({ at: failed.finished_at, kind: "spotify_unauthorized" });
+    expect(await code()).toBe(503);
   });
 
   it("reports failing, not stale, when the last ok run is old and the latest run failed", async () => {
@@ -190,23 +212,77 @@ describe("GET /api/poller/status: run status", () => {
 
     expect(body.status).toBe("ok");
     expect(body.last_failure).toEqual({ at: failed.finished_at, kind: "spotify_timeout" });
+    expect(await code()).toBe(200);
   });
 
   it("picks the most recent failure by finish time, not by the order rows were stored", async () => {
     const newest = run("failed", 10 * MINUTE, "newest_failure");
-    // The newer failure is stored first, so its id is the lower one.
-    await insertRuns([newest, run("failed", 90 * MINUTE, "older_failure")]);
+    // The newest failure is stored last, so the first row stored is the older failure.
+    await insertRuns([run("failed", 90 * MINUTE, "older_failure"), newest]);
 
     const body = await status();
 
     expect(body.last_failure).toEqual({ at: newest.finished_at, kind: "newest_failure" });
   });
 
+  it("picks the newest ok run by finish time, not by the order rows were stored", async () => {
+    const newest = run("ok", 10 * MINUTE);
+    // The older ok run is stored last, so it has the higher id.
+    await insertRuns([newest, run("ok", 90 * MINUTE)]);
+
+    expect((await status()).last_ok_at).toBe(newest.finished_at);
+  });
+
   it("picks the latest run by finish time when an older run was stored last", async () => {
-    // The failed run finished after the ok run, though it was stored first.
+    // The failed run finished after the ok run, though it was stored first. The older ok run
+    // is stored last, so it has the higher id.
     await insertRuns([run("failed", 5 * MINUTE), run("ok", 6 * MINUTE)]);
 
     expect((await status()).status).toBe("failing");
+  });
+
+  it("breaks a tie on finish time by the higher id, so the answer never flips", async () => {
+    const tied = run("failed", 10 * MINUTE, "stored_first");
+    // Same finish time. The row stored second has the higher id and must win.
+    await insertRuns([tied, { ...tied, failure_kind: "stored_second" }]);
+
+    for (let i = 0; i < 3; i += 1) {
+      expect((await status()).last_failure).toEqual({ at: tied.finished_at, kind: "stored_second" });
+    }
+  });
+
+  it("breaks a tie on finish time by the higher id between an ok run and a failed run", async () => {
+    const at = run("ok", 10 * MINUTE);
+    const failedAtSameTime = { ...run("failed", 10 * MINUTE, "tied_failure"), finished_at: at.finished_at, started_at: at.started_at };
+    await insertRuns([at, failedAtSameTime]);
+
+    expect((await status()).status).toBe("failing");
+  });
+
+  it("gives last_stored_at as the finish time of the newest ok run that stored something", async () => {
+    const storing = run("ok", 40 * MINUTE);
+    const idle = { ...run("ok", 5 * MINUTE), stored: 0 };
+    const newestFailed = run("failed", MINUTE);
+    await insertRuns([storing, idle, newestFailed]);
+
+    const body = await status();
+
+    expect(body.last_stored_at).toBe(storing.finished_at);
+    expect(body.last_ok_at).toBe(idle.finished_at);
+  });
+
+  it("ignores a run with no stored count, and a failed run, for last_stored_at", async () => {
+    const nulls = { ...run("ok", 5 * MINUTE), stored: null };
+    await insertRuns([nulls, run("failed", MINUTE)]);
+
+    expect((await status()).last_stored_at).toBeNull();
+  });
+
+  it("picks last_stored_at by finish time, not by the order rows were stored", async () => {
+    const newest = run("ok", 10 * MINUTE);
+    await insertRuns([newest, run("ok", 3 * HOUR)]);
+
+    expect((await status()).last_stored_at).toBe(newest.finished_at);
   });
 
   it("accepts the longest failure kind", async () => {
@@ -236,29 +312,29 @@ describe("GET /api/poller/status: login", () => {
   }
 
   it("is unknown when the key is absent", async () => {
-    expect(await loginFor(null)).toEqual({ state: "unknown", days_since_authorized: null });
+    expect(await loginFor(null)).toEqual({ state: "unknown" });
   });
 
   it("ignores other keys", async () => {
     await setState("some_other_key", iso(Date.now() - 200 * DAY));
 
-    expect((await status()).login).toEqual({ state: "unknown", days_since_authorized: null });
+    expect((await status()).login).toEqual({ state: "unknown" });
   });
 
-  it.each<[number, string, number]>([
-    [0, "ok", 0],
-    [1, "ok", 1],
-    [149, "ok", 149],
-    [150, "expiring", 150],
-    [151, "expiring", 151],
-    [179, "expiring", 179],
-    [180, "expired", 180],
-    [181, "expired", 181],
-    [400, "expired", 400],
-  ])("reads an instant %i days ago as %s, %i days", async (days, state, counted) => {
+  it.each<[number, string]>([
+    [0, "ok"],
+    [1, "ok"],
+    [149, "ok"],
+    [150, "expiring"],
+    [151, "expiring"],
+    [179, "expiring"],
+    [180, "expired"],
+    [181, "expired"],
+    [400, "expired"],
+  ])("reads an instant %i days ago as %s", async (days, state) => {
     const login = await loginFor(iso(Date.now() - days * DAY));
 
-    expect(login).toEqual({ state, days_since_authorized: counted });
+    expect(login).toEqual({ state });
   });
 
   it.each<[number, string]>([
@@ -272,8 +348,7 @@ describe("GET /api/poller/status: login", () => {
 
     const login = await loginFor(day);
 
-    expect(login.state).toBe(state);
-    expect(login.days_since_authorized).toBe(days);
+    expect(login).toEqual({ state });
   });
 
   it("reads an instant with a UTC offset", async () => {
@@ -283,7 +358,7 @@ describe("GET /api/poller/status: login", () => {
 
     const login = await loginFor(`${local}+02:00`);
 
-    expect(login).toEqual({ state: "expiring", days_since_authorized: 160 });
+    expect(login).toEqual({ state: "expiring" });
   });
 
   it("reads an instant just under 150 days old as ok and just over as expiring", async () => {
@@ -296,29 +371,207 @@ describe("GET /api/poller/status: login", () => {
     expect((await loginFor(iso(Date.now() - 180 * DAY - 5 * MINUTE))).state).toBe("expired");
   });
 
-  it("reads a future date as unknown", async () => {
-    expect(await loginFor(iso(Date.now() + 3 * DAY))).toEqual({
-      state: "unknown",
-      days_since_authorized: null,
-    });
+  it("reads a future date as expiring, so it gets noticed", async () => {
+    expect(await loginFor(iso(Date.now() + 3 * DAY))).toEqual({ state: "expiring" });
   });
 
-  it("reads a future calendar day as unknown", async () => {
+  it("reads a future calendar day as expiring", async () => {
     const later = new Date(Date.now() + 2 * DAY).toISOString().slice(0, 10);
 
-    expect(await loginFor(later)).toEqual({ state: "unknown", days_since_authorized: null });
+    expect(await loginFor(later)).toEqual({ state: "expiring" });
   });
 
   it.each(["", "soon", "2026-13-45", "2026-02-30", "1700000000", "yesterday", "  ", "2026-1-5", "NaN", "{}"])(
-    "reads the unreadable value %j as unknown",
+    "reads the present but unreadable value %j as expiring, not unknown",
     async (value) => {
-      expect(await loginFor(value)).toEqual({ state: "unknown", days_since_authorized: null });
+      expect(await loginFor(value)).toEqual({ state: "expiring" });
     },
   );
+
+  it("never reports a day count", async () => {
+    await setState("spotify_authorized_at", iso(Date.now() - 160 * DAY));
+
+    expect(JSON.stringify(await status())).not.toContain("days_since_authorized");
+  });
 
   it("changes when the stored date changes", async () => {
     expect((await loginFor(iso(Date.now() - 10 * DAY))).state).toBe("ok");
     expect((await loginFor(iso(Date.now() - 170 * DAY))).state).toBe("expiring");
+  });
+});
+
+describe("GET /api/poller/status: attention and the HTTP code", () => {
+  const authorized = (daysAgo: number) => setState("spotify_authorized_at", iso(Date.now() - daysAgo * DAY));
+
+  it("has an empty attention list and 200 when all is well", async () => {
+    await insertRuns([run("ok", 5 * MINUTE)]);
+    await authorized(10);
+
+    const res = await getStatus();
+
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as Status).attention).toEqual([]);
+  });
+
+  it("warns login_unknown and still answers 200", async () => {
+    await insertRuns([run("ok", 5 * MINUTE)]);
+
+    const res = await getStatus();
+
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as Status).attention).toEqual(["login_unknown"]);
+  });
+
+  it("warns login_expiring and still answers 200", async () => {
+    await insertRuns([run("ok", 5 * MINUTE)]);
+    await authorized(160);
+
+    const res = await getStatus();
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("public, s-maxage=60");
+    expect(((await res.json()) as Status).attention).toEqual(["login_expiring"]);
+  });
+
+  it("warns login_expiring for an unreadable stored value", async () => {
+    await insertRuns([run("ok", 5 * MINUTE)]);
+    await setState("spotify_authorized_at", "soon");
+
+    expect((await status()).attention).toEqual(["login_expiring"]);
+    expect(await code()).toBe(200);
+  });
+
+  it("answers 503 with the full body and no cache when the login is expired", async () => {
+    await insertRuns([run("ok", 5 * MINUTE)]);
+    await authorized(181);
+
+    const res = await getStatus();
+    const body = (await res.json()) as Status;
+
+    expect(res.status).toBe(503);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(body.status).toBe("ok");
+    expect(body.login).toEqual({ state: "expired" });
+    expect(body.attention).toEqual(["login_expired"]);
+  });
+
+  it("answers 503 for a stale poller even with a good login", async () => {
+    await insertRuns([run("ok", 3 * HOUR)]);
+    await authorized(10);
+
+    const res = await getStatus();
+
+    expect(res.status).toBe(503);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(((await res.json()) as Status).status).toBe("stale");
+  });
+
+  it("warns no_stores_recently when no run ever stored anything, and answers 200", async () => {
+    await insertRuns([{ ...run("ok", 5 * MINUTE), stored: 0 }]);
+    await authorized(10);
+
+    const res = await getStatus();
+    const body = (await res.json()) as Status;
+
+    expect(res.status).toBe(200);
+    expect(body.last_stored_at).toBeNull();
+    expect(body.attention).toEqual(["no_stores_recently"]);
+  });
+
+  it("warns no_stores_recently when the newest store is older than seven days", async () => {
+    const stored = run("ok", 7 * DAY + 5 * MINUTE);
+    await insertRuns([stored, { ...run("ok", 5 * MINUTE), stored: 0 }]);
+    await authorized(10);
+
+    const body = await status();
+
+    expect(body.last_stored_at).toBe(stored.finished_at);
+    expect(body.attention).toEqual(["no_stores_recently"]);
+  });
+
+  it("does not warn when the newest store is under seven days old", async () => {
+    await insertRuns([run("ok", 7 * DAY - 5 * MINUTE), { ...run("ok", 5 * MINUTE), stored: 0 }]);
+    await authorized(10);
+
+    expect((await status()).attention).toEqual([]);
+  });
+
+  it("does not add no_stores_recently when the status is failing", async () => {
+    await insertRuns([run("failed", MINUTE)]);
+    await authorized(10);
+
+    expect((await status()).attention).toEqual([]);
+  });
+
+  it("lists several warnings in a fixed order", async () => {
+    await insertRuns([{ ...run("ok", 5 * MINUTE), stored: 0 }]);
+
+    const res = await getStatus();
+
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as Status).attention).toEqual(["login_unknown", "no_stores_recently"]);
+  });
+});
+
+describe("GET /api/poller/status: a run that finishes ahead of the clock", () => {
+  it("ignores an ok run more than five minutes ahead, and warns clock_skew", async () => {
+    const real = run("ok", 3 * HOUR);
+    await insertRuns([real, run("ok", -HOUR)]);
+
+    const res = await getStatus();
+    const body = (await res.json()) as Status;
+
+    // The future run would have made the poller look fresh. It must not.
+    expect(body.status).toBe("stale");
+    expect(res.status).toBe(503);
+    expect(body.last_ok_at).toBe(real.finished_at);
+    expect(body.attention).toContain("clock_skew");
+  });
+
+  it("falls back to the older ok run, so the answer is ok when that run is fresh", async () => {
+    const real = run("ok", 10 * MINUTE);
+    await insertRuns([real, run("ok", -HOUR)]);
+    await setState("spotify_authorized_at", iso(Date.now() - 10 * DAY));
+
+    const res = await getStatus();
+    const body = (await res.json()) as Status;
+
+    expect(body.status).toBe("ok");
+    expect(body.last_ok_at).toBe(real.finished_at);
+    expect(body.last_stored_at).toBe(real.finished_at);
+    expect(body.attention).toEqual(["clock_skew"]);
+    expect(res.status).toBe(200);
+  });
+
+  it("is no_runs when the only run is ahead of the clock", async () => {
+    await insertRuns([run("ok", -HOUR)]);
+
+    const res = await getStatus();
+    const body = (await res.json()) as Status;
+
+    expect(res.status).toBe(503);
+    expect(body.status).toBe("no_runs");
+    expect(body.last_ok_at).toBeNull();
+    expect(body.attention).toContain("clock_skew");
+  });
+
+  it("ignores a failed run that is ahead of the clock", async () => {
+    await insertRuns([run("ok", 5 * MINUTE), run("failed", -HOUR)]);
+
+    const body = await status();
+
+    expect(body.status).toBe("ok");
+    expect(body.last_failure).toBeNull();
+    expect(body.attention).toContain("clock_skew");
+  });
+
+  it("trusts a run one minute ahead", async () => {
+    await insertRuns([run("ok", -MINUTE)]);
+
+    const body = await status();
+
+    expect(body.status).toBe("ok");
+    expect(body.attention).not.toContain("clock_skew");
   });
 });
 
@@ -329,10 +582,17 @@ describe("GET /api/poller/status: what the caller sees", () => {
 
     const body = (await (await getStatus()).json()) as Record<string, unknown>;
 
-    expect(Object.keys(body).sort()).toEqual(["last_failure", "last_ok_at", "login", "status"]);
+    expect(Object.keys(body).sort()).toEqual([
+      "attention",
+      "last_failure",
+      "last_ok_at",
+      "last_stored_at",
+      "login",
+      "status",
+    ]);
     expect(Object.keys(body.last_failure as object).sort()).toEqual(["at", "kind"]);
-    expect(Object.keys(body.login as object).sort()).toEqual(["days_since_authorized", "state"]);
-    expect(Number.isInteger((body.login as Status["login"]).days_since_authorized)).toBe(true);
+    expect(Object.keys(body.login as object)).toEqual(["state"]);
+    expect(body.attention).toEqual(["login_expiring"]);
   });
 
   it("never shows a stored value that is not one of the documented fields", async () => {
@@ -376,6 +636,8 @@ describe("GET /api/poller/status: query parameters", () => {
   });
 
   it("answers an empty query string as a plain request", async () => {
+    await insertRuns([run("ok", 5 * MINUTE)]);
+
     expect((await getStatus("healthy", "?")).status).toBe(200);
   });
 
@@ -502,6 +764,28 @@ describe("the poller tables", () => {
       [table],
     );
 
+    expect(effective.rows).toEqual([]);
+    expect(listed.rows).toEqual([]);
+  });
+
+  it("poller_runs_id_seq grants nothing to anon, authenticated or PUBLIC", async () => {
+    const effective = await db.query(
+      `select r.role from (values ('anon'), ('authenticated')) as r(role)
+        where has_sequence_privilege(r.role, 'public.poller_runs_id_seq', 'USAGE,SELECT,UPDATE')`,
+    );
+    const listed = await db.query(
+      `select case a.grantee when 0 then 'PUBLIC' else a.grantee::regrole::text end as grantee
+         from pg_class c join pg_namespace n on n.oid = c.relnamespace,
+              lateral aclexplode(coalesce(c.relacl, acldefault('S', c.relowner))) a
+        where n.nspname = 'public' and c.relname = 'poller_runs_id_seq' and c.relkind = 'S'
+          and (a.grantee = 0 or a.grantee::regrole::text in ('anon', 'authenticated'))`,
+    );
+    const exists = await db.query(
+      `select 1 from pg_class c join pg_namespace n on n.oid = c.relnamespace
+        where n.nspname = 'public' and c.relname = 'poller_runs_id_seq' and c.relkind = 'S'`,
+    );
+
+    expect(exists.rowCount).toBe(1);
     expect(effective.rows).toEqual([]);
     expect(listed.rows).toEqual([]);
   });
