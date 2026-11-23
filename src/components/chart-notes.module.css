@@ -64,3 +64,21 @@
   color: var(--faint);
   font-size: 0.875rem;
 }
+
+.emptyWeek {
+  margin-top: 1.5rem;
+}
+
+.emptyCaption {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  letter-spacing: 0.02em;
+}
+
+.emptyText {
+  margin-top: 0.75rem;
+  padding: 1.25rem;
+  border: 1px dashed var(--rule);
+  color: var(--ink);
+}

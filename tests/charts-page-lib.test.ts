@@ -10,8 +10,11 @@ import {
   formatWeek,
   lastWeekLabel,
   movementOf,
+  cacheControlFor,
   parseChartsParams,
+  parseChartsSearch,
   resolveWeek,
+  statusFor,
   weeksBetween,
 } from "../src/lib/chart-page";
 
@@ -102,6 +105,22 @@ describe("addWeeks and weeksBetween", () => {
     expect(addWeeks("2026-02-02", 1)).toBe("2026-02-09");
     expect(addWeeks("2026-01-05", -1)).toBe("2025-12-29");
     expect(addWeeks("2026-03-02", -4)).toBe("2026-02-02");
+  });
+
+  it("moves across a month end, a year end and a leap day", () => {
+    expect(addWeeks("2026-03-02", 1)).toBe("2026-03-09");
+    expect(addWeeks("2026-10-26", 1)).toBe("2026-11-02");
+    expect(addWeeks("2025-12-29", 1)).toBe("2026-01-05");
+    // 2028 is a leap year: the week of Monday 2028-02-28 holds Tuesday 2028-02-29.
+    expect(addWeeks("2028-02-28", 1)).toBe("2028-03-06");
+    expect(addWeeks("2028-03-06", -1)).toBe("2028-02-28");
+    expect(addWeeks("2028-02-21", 2)).toBe("2028-03-06");
+  });
+
+  it("is not shifted by a change of clocks in New York", () => {
+    expect(addWeeks("2026-03-02", 1)).toBe("2026-03-09");
+    expect(addWeeks("2026-10-26", 1)).toBe("2026-11-02");
+    expect(addWeeks("2026-11-02", -1)).toBe("2026-10-26");
   });
 
   it("lists the weeks from the latest back to the first", () => {
@@ -236,5 +255,40 @@ describe("formatDay", () => {
   it("writes one date with its year", () => {
     expect(formatDay("2026-02-02")).toBe("Feb 2, 2026");
     expect(formatDay("2025-12-29")).toBe("Dec 29, 2025");
+  });
+});
+
+describe("parseChartsSearch", () => {
+  it("reads the same rules from a query string, and sees a name given twice", () => {
+    expect(parseChartsSearch(new URLSearchParams("kind=album&week=2026-02-09"))).toEqual({ kind: "album", week: "2026-02-09" });
+    expect(parseChartsSearch(new URLSearchParams("kind=album&kind=track"))).toBeNull();
+    expect(parseChartsSearch(new URLSearchParams("week=2026-02-10"))).toBeNull();
+    expect(parseChartsSearch(new URLSearchParams("utm_source=a"))).toEqual({ kind: "track", week: null });
+  });
+});
+
+describe("statusFor and cacheControlFor", () => {
+  const bounds = { firstWeek: "2026-02-02", latestWeek: "2026-02-16", currentWeek: "2026-02-23" };
+  const choice = resolveWeek(null, bounds);
+  if (choice.status !== "ok") throw new Error("test setup");
+
+  it("maps each state of the page to a status", () => {
+    expect(statusFor({ status: "ok", bounds, choice, rows: [] })).toBe(200);
+    expect(statusFor({ status: "no_data" })).toBe(200);
+    expect(statusFor({ status: "invalid" })).toBe(400);
+    expect(statusFor({ status: "out_of_range", bounds })).toBe(404);
+    expect(statusFor({ status: "unavailable" })).toBe(503);
+  });
+
+  it("lets a shared cache keep only a chart, as the API does, and no other state", () => {
+    expect(cacheControlFor({ status: "ok", bounds, choice, rows: [] })).toBe("public, s-maxage=300, stale-while-revalidate=600");
+    for (const data of [
+      { status: "no_data" },
+      { status: "invalid" },
+      { status: "out_of_range", bounds },
+      { status: "unavailable" },
+    ] as const) {
+      expect(cacheControlFor(data)).toBe("no-store");
+    }
   });
 });

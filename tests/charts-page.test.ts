@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync, type Dirent } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { clearPlays, insertPlays, plays, type Chart, type Play } from "./support/chart-data";
+import { clearPlays, insertPlays, plays, withDb, type Chart, type ChartRow, type Play } from "./support/chart-data";
 import { testEnv, type SiteName } from "./support/env";
 import { bodyRows, cellsOf, decode, elementOf, hrefsOf, tableOf, textOf } from "./support/html";
 
@@ -16,10 +16,18 @@ import { bodyRows, cellsOf, decode, elementOf, hrefsOf, tableOf, textOf } from "
  *   W2    5 (1st)  3 (2nd)  2 (3rd)  -        1 (4th)  -
  *   W3    4 (2nd)  6 (1st)  -        2 (3rd)  1 (5th)  1 (4th, longer plays win the tie)
  *
+ * One more play, of track G in the week of 2026-01-12, makes that the first week. The weeks 2026-01-19 and
+ * 2026-01-26 are inside the range and hold no counted play, so they are empty weeks.
+ *
  * So in W2: A holds, B climbs 2, C falls 1, E is NEW. In W3: B climbs 1, A falls 1, D is RE-ENTRY
  * (on the chart in W1, off in W2), F is NEW, E falls 1.
  */
 const env = testEnv();
+const FIRST = "2026-01-12";
+const GAP_A = "2026-01-19";
+const GAP_B = "2026-01-26";
+const BEFORE_FIRST = "2026-01-05";
+const AFTER_LATEST = "2026-02-23";
 const W1 = "2026-02-02";
 const W2 = "2026-02-09";
 const W3 = "2026-02-16";
@@ -35,6 +43,7 @@ function named(track: string, count: number, startIso: string, overrides: Partia
 function dataset(): Play[] {
   const f = { track_name: XSS_TRACK, artist_name: XSS_ARTIST, album_name: XSS_ALBUM, ms_played: 250_000 };
   return [
+    ...named("G", 1, "2026-01-13T15:00:00Z"),
     ...named("A", 5, "2026-02-03T15:00:00Z"),
     ...named("B", 2, "2026-02-03T16:00:00Z"),
     ...named("C", 4, "2026-02-03T17:00:00Z"),
@@ -60,6 +69,22 @@ async function api(query: string): Promise<Chart> {
   const res = await fetch(`${env.sites.healthy}/api/charts/weekly?${query}`);
   expect(res.status).toBe(200);
   return (await res.json()) as Chart;
+}
+
+/** What the Move cell must say for an API row, worked out here from the API numbers alone. */
+function expectedMove(row: ChartRow): string {
+  if (row.weeks_on_chart === 1) return "NEW";
+  if (row.last_week_rank === null) return "RE-ENTRY";
+  const steps = row.last_week_rank - row.rank;
+  if (steps === 0) return "= No change";
+  const places = `${Math.abs(steps)} ${Math.abs(steps) === 1 ? "place" : "places"}`;
+  return steps > 0 ? `\u25B2 ${Math.abs(steps)} Up ${places}` : `\u25BC ${Math.abs(steps)} Down ${places}`;
+}
+
+/** The text of the span marked data-part in a piece of markup, or null. */
+function partText(html: string, part: string): string | null {
+  const found = new RegExp(`<span[^>]*data-part="${part}"[^>]*>([\\s\\S]*?)</span>`).exec(html)?.[1];
+  return found === undefined ? null : textOf(found);
 }
 
 /** The table body as rows of cell text, with the markup beside it. */
@@ -128,12 +153,18 @@ describe("the Charts page with data", () => {
             const title = cells[2]!;
             expect(title.tag).toBe("th");
             expect(title.attrs).toContain('scope="row"');
-            const expectedName = kind === "album" && row.artist ? row.name.replace(` - ${row.artist}`, "") : row.name;
-            expect(title.text.startsWith(expectedName)).toBe(true);
-            if (kind === "artist") expect(title.html).not.toContain('data-part="artist"');
-            else expect(textOf(/<[^>]*data-part="artist"[^>]*>([\s\S]*?)<\/[a-z]+>/.exec(title.html)?.[1] ?? "")).toBe(row.artist);
+            const shownName = partText(title.html, "name");
+            if (kind === "artist") {
+              expect(shownName).toBe(row.name);
+              expect(title.html).not.toContain('data-part="artist"');
+            } else {
+              expect(partText(title.html, "artist")).toBe(row.artist);
+              // The API writes an album as "Album - Artist". The page shows the album on one line and the artist on the next.
+              expect(kind === "album" ? `${shownName} - ${row.artist}` : shownName).toBe(row.name);
+            }
+            expect(cells[1]!.text.replace(/\s+/g, " ")).toBe(expectedMove(row));
             expect(cells[0]!.text).toBe(String(row.rank));
-            expect(cells[3]!.text).toBe(row.last_week_rank === null ? "–" : String(row.last_week_rank));
+            expect(cells[3]!.text).toBe(row.last_week_rank === null ? "– No rank last week" : String(row.last_week_rank));
             expect(cells[4]!.text).toBe(String(row.peak_rank));
             expect(cells[5]!.text).toBe(String(row.weeks_on_chart));
             expect(cells[6]!.text).toBe(String(row.plays));
@@ -165,12 +196,19 @@ describe("the Charts page with data", () => {
       expect(same.text).not.toMatch(/[▲▼]/);
     });
 
+    it("hides the dash from screen readers and gives them words instead", async () => {
+      const { html } = await page(`week=${W2}`);
+      const cell = rowNamed(html, "Track E").cells[3]!;
+      expect(cell.html).toMatch(/<span[^>]*aria-hidden="true"[^>]*>\u2013<\/span>/);
+      expect(cell.html).toContain("No rank last week");
+    });
+
     it("flags a first week as NEW in text, with no arrow and a dash for last week", async () => {
       const { html } = await page(`week=${W2}`);
       const row = rowNamed(html, "Track E");
       expect(row.cells[1]!.text).toBe("NEW");
       expect(row.cells[1]!.text).not.toMatch(/[▲▼]|Up|Down/);
-      expect(row.cells[3]!.text).toBe("–");
+      expect(row.cells[3]!.text).toBe("– No rank last week");
       expect(row.cells[5]!.text).toBe("1");
     });
 
@@ -178,7 +216,7 @@ describe("the Charts page with data", () => {
       const { html } = await page(`week=${W3}`);
       const row = rowNamed(html, "Track D");
       expect(row.cells[1]!.text).toBe("RE-ENTRY");
-      expect(row.cells[3]!.text).toBe("–");
+      expect(row.cells[3]!.text).toBe("– No rank last week");
       expect(Number(row.cells[5]!.text)).toBeGreaterThan(1);
     });
 
@@ -226,21 +264,20 @@ describe("the Charts page with data", () => {
       }
     });
 
-    it("keeps a week the reader chose when the kind changes", async () => {
+    it("drops the week when the kind changes, because each kind has its own first week", async () => {
       const { html } = await page(`week=${W2}`);
-      expect(tabs(html).map((t) => t.href)).toEqual([
-        `/charts?week=${W2}`,
-        `/charts?kind=artist&week=${W2}`,
-        `/charts?kind=album&week=${W2}`,
-      ]);
+      expect(tabs(html).map((t) => t.href)).toEqual(["/charts", "/charts?kind=artist", "/charts?kind=album"]);
     });
 
     it("shows the artist chart without an artist line, and the album chart with one", async () => {
       const artist = await page("kind=artist");
       expect(rowsOf(artist.html)[0]!.cells[2]!.text).toBe("Band B");
       const album = await page("kind=album");
-      expect(rowsOf(album.html)[0]!.cells[2]!.text).toContain("Album B");
-      expect(rowsOf(album.html)[0]!.cells[2]!.text).toContain("Band B");
+      const title = rowsOf(album.html)[0]!.cells[2]!;
+      expect(partText(title.html, "name")).toBe("Album B");
+      expect(partText(title.html, "artist")).toBe("Band B");
+      expect(title.text).not.toContain("Album B - Band B");
+      expect(album.html).not.toContain("Album B - Band B");
     });
   });
 
@@ -251,12 +288,20 @@ describe("the Charts page with data", () => {
 
       const last = await page(`week=${W3}`);
       expect(hrefsOf(last.html)).toContain(`/charts?week=${W2}`);
-      expect(hrefsOf(last.html)).not.toContain(`/charts?week=2026-02-23`);
+      expect(hrefsOf(last.html)).not.toContain(`/charts?week=${AFTER_LATEST}`);
       expect(textOf(last.html)).toContain("Next week");
 
-      const first = await page(`week=${W1}`);
-      expect(hrefsOf(first.html)).toContain(`/charts?week=${W2}`);
-      expect(hrefsOf(first.html)).not.toContain(`/charts?week=2026-01-26`);
+      const first = await page(`week=${FIRST}`);
+      expect(hrefsOf(first.html)).toContain(`/charts?week=${GAP_A}`);
+      expect(hrefsOf(first.html)).not.toContain(`/charts?week=${BEFORE_FIRST}`);
+      expect(textOf(first.html)).toContain("Previous week");
+    });
+
+    it("says in words that a missing link is the first or the latest week", async () => {
+      const last = await page(`week=${W3}`);
+      expect(textOf(last.html)).toContain("Next week (latest week)");
+      const first = await page(`week=${FIRST}`);
+      expect(textOf(first.html)).toContain("Previous week (first week)");
     });
 
     it("keeps the kind in the previous and next links", async () => {
@@ -275,7 +320,7 @@ describe("the Charts page with data", () => {
         selected: (m[1] ?? "").includes("selected"),
         label: textOf(m[2] ?? ""),
       }));
-      expect(options.map((o) => o.value)).toEqual([W3, W2, W1]);
+      expect(options.map((o) => o.value)).toEqual([W3, W2, W1, GAP_B, GAP_A, FIRST]);
       expect(options.filter((o) => o.selected).map((o) => o.value)).toEqual([W2]);
       expect(options[1]!.label).toContain("Feb 9 – Feb 15, 2026");
       expect(form).toMatch(/<select[^>]*name="week"/);
@@ -309,6 +354,7 @@ describe("the Charts page with data", () => {
         .filter((m) => (m[1] ?? "").includes('scope="col"'))
         .map((m) => textOf(m[2] ?? ""));
       expect(heads).toEqual(["Rank", "Move", "Title", "Last week", "Peak", "Weeks", "Plays", "Minutes"]);
+      expect(table).not.toContain("<abbr");
       for (const row of rowsOf(html)) {
         expect(row.cells.filter((c) => c.tag === "th")).toHaveLength(1);
         expect(row.cells[2]!.attrs).toContain('scope="row"');
@@ -376,51 +422,158 @@ describe("the Charts page with data", () => {
     });
   });
 
-  describe("a request the page cannot serve", () => {
-    const messages: [string, string][] = [
+  describe("an invalid request is a 400", () => {
+    const invalid: [string, string][] = [
       ["a kind that is not a chart", "kind=genre"],
       ["a kind with the wrong case", "kind=Track"],
+      ["an empty kind", "kind="],
       ["a kind given twice", "kind=track&kind=album"],
       ["a week that is not a Monday", "week=2026-02-10"],
       ["a week that is not a date", "week=soon"],
-      ["a week before the first", "week=2026-01-26"],
-      ["a week after the latest", "week=2026-02-23"],
+      ["a week that does not exist", "week=2026-02-30"],
+      ["an empty week", "week="],
       ["a week given twice", `week=${W1}&week=${W2}`],
     ];
 
-    it.each(messages)("answers %s with a plain message, no table and a way back", async (_label, query) => {
+    it.each(invalid)("answers %s with 400, a plain message, no table and a way back", async (_label, query) => {
       const { res, html } = await page(query);
-      expect(res.status).toBeLessThan(500);
+      expect(res.status).toBe(400);
+      expect(res.headers.get("cache-control")).toBe("no-store");
       expect(tableOf(html)).toBeNull();
-      expect(html).toMatch(/<h2[^>]*>[^<]*(does not exist|No chart for that week)/);
+      expect(html).toMatch(/<h2[^>]*>That chart does not exist<\/h2>/);
       expect(hrefsOf(html)).toContain("/charts");
-      expect(html).toMatch(/<meta[^>]*name="robots"[^>]*content="noindex/);
       expect(html).not.toMatch(/\bat\s+\S+\s+\(|stack|TypeError|Error:/);
     });
 
-    it("keeps the kind in the way back from a week that is out of range", async () => {
-      const { html } = await page("kind=album&week=2026-01-26");
-      expect(hrefsOf(html)).toContain("/charts?kind=album");
-    });
-
-    it("names the range a week must fall in", async () => {
-      const { html } = await page("week=2026-01-26");
-      const text = textOf(html);
-      expect(text).toContain("Feb 2, 2026");
-      expect(text).toContain("Feb 16, 2026");
-    });
-
-    it("ignores a parameter it does not know", async () => {
-      const { html } = await page(`utm_source=newsletter&kind=artist`);
-      expect(tableOf(html)).not.toBeNull();
+    it("keeps the chart tabs on a 400, so a visitor can pick a chart, with none marked current", async () => {
+      const { html } = await page("kind=genre");
+      const nav = elementOf(html, "nav", /aria-label="Chart type"/);
+      expect(nav).not.toBeNull();
+      expect(hrefsOf(nav!)).toEqual(["/charts", "/charts?kind=artist", "/charts?kind=album"]);
+      expect(nav).not.toContain("aria-current");
     });
 
     it("does not echo a bad parameter into the page", async () => {
-      const { html } = await page(`kind=${encodeURIComponent("<script>alert(7)</script>")}`);
+      const { res, html } = await page(`kind=${encodeURIComponent("<script>alert(7)</script>")}`);
+      expect(res.status).toBe(400);
       // The framework repeats the address inside its own data script, as encoded text. The page itself must not show it.
       const main = /<main[\s\S]*<\/main>/.exec(html)?.[0] ?? "";
       expect(main).not.toContain("alert(7)");
       expect(html).not.toContain("<script>alert(7)");
+    });
+
+    it("ignores a parameter it does not know", async () => {
+      const { res, html } = await page(`utm_source=newsletter&kind=artist`);
+      expect(res.status).toBe(200);
+      expect(tableOf(html)).not.toBeNull();
+    });
+  });
+
+  describe("a week outside the chart is a 404", () => {
+    it.each([
+      ["before the first week", BEFORE_FIRST],
+      ["after the latest week", AFTER_LATEST],
+    ])("answers a week %s with 404, no table and a way back", async (_label, week) => {
+      const { res, html } = await page(`week=${week}`);
+      expect(res.status).toBe(404);
+      expect(res.headers.get("cache-control")).toBe("no-store");
+      expect(tableOf(html)).toBeNull();
+      expect(html).toMatch(/<h2[^>]*>No chart for that week<\/h2>/);
+      expect(hrefsOf(html)).toContain("/charts");
+    });
+
+    it("keeps the kind in the way back, and keeps the tabs", async () => {
+      const { res, html } = await page(`kind=album&week=${BEFORE_FIRST}`);
+      expect(res.status).toBe(404);
+      expect(hrefsOf(html)).toContain("/charts?kind=album");
+      expect(elementOf(html, "nav", /aria-label="Chart type"/)).not.toBeNull();
+    });
+
+    it("names the range a week must fall in", async () => {
+      const { html } = await page(`week=${BEFORE_FIRST}`);
+      const text = textOf(html);
+      expect(text).toContain("Jan 12, 2026");
+      expect(text).toContain("Feb 16, 2026");
+    });
+
+    it("refuses the running week with 404 although the API accepts it, because the page lists only weeks that have a chart", async () => {
+      const current = await withDb(async (db) =>
+        (await db.query<{ monday: string }>(
+          "select to_char(date_trunc('week', now() at time zone 'America/New_York')::date, 'YYYY-MM-DD') as monday",
+        )).rows[0]!.monday,
+      );
+      // The data ends in February, so the current week is later than the latest week of the chart.
+      expect(current > W3).toBe(true);
+      const api = await fetch(`${env.sites.healthy}/api/charts/weekly?week=${current}`);
+      expect(api.status).toBe(200);
+      const { res } = await page(`week=${current}`);
+      expect(res.status).toBe(404);
+    });
+  });
+
+  describe("an empty week inside the range", () => {
+    it.each([GAP_A, GAP_B])("shows a message in place of the rows for %s, and keeps the week controls", async (week) => {
+      const { res, html } = await page(`week=${week}`);
+      expect(res.status).toBe(200);
+      expect(tableOf(html)).toBeNull();
+      const text = textOf(html);
+      expect(text).toContain("Top tracks");
+      expect(text).toContain("No plays counted this week.");
+      expect(hrefsOf(html)).toEqual(expect.arrayContaining(["/charts?week=" + addDay(week, -7), "/charts?week=" + addDay(week, 7)]));
+      expect(elementOf(html, "form", /method="get"/i)).not.toBeNull();
+      expect(elementOf(html, "nav", /aria-label="Chart type"/)).not.toBeNull();
+    });
+
+    it("does not borrow the nearest week that has a chart", async () => {
+      const { html } = await page(`week=${GAP_B}`);
+      expect(html).not.toContain("Track A");
+      expect(html).not.toContain("Track G");
+    });
+
+    it("has its own chart on the first week", async () => {
+      const { res, html } = await page(`week=${FIRST}`);
+      expect(res.status).toBe(200);
+      expect(rowsOf(html).map((r) => r.cells[1]!.text)).toEqual(["NEW"]);
+    });
+  });
+
+  describe("headers and the head", () => {
+    it("lets a shared cache keep a chart for five minutes, like the API does", async () => {
+      const page200 = await page();
+      expect(page200.res.headers.get("cache-control")).toBe("public, s-maxage=300, stale-while-revalidate=600");
+      const empty = await page(`week=${GAP_A}`);
+      expect(empty.res.headers.get("cache-control")).toBe("public, s-maxage=300, stale-while-revalidate=600");
+      const api = await fetch(`${env.sites.healthy}/api/charts/weekly`);
+      expect(api.headers.get("cache-control")).toBe(page200.res.headers.get("cache-control"));
+    });
+
+    it("puts a canonical link in the head of a chart, with the kind and week the reader asked for and nothing else", async () => {
+      const { html } = await page(`utm_source=x&kind=artist&week=${W2}`);
+      const head = /<head>[\s\S]*<\/head>/.exec(html)?.[0] ?? "";
+      const canonical = /<link[^>]*rel="canonical"[^>]*href="([^"]*)"/.exec(head)?.[1];
+      expect(canonical).toBeDefined();
+      expect(new URL(decode(canonical!), "http://x").pathname + new URL(decode(canonical!), "http://x").search).toBe(`/charts?kind=artist&week=${W2}`);
+      expect(head).not.toMatch(/<meta[^>]*name="robots"/);
+    });
+
+    it("keeps a chart without noindex, and a plain address canonical to itself", async () => {
+      const { html } = await page();
+      const head = /<head>[\s\S]*<\/head>/.exec(html)?.[0] ?? "";
+      expect(head).toMatch(/rel="canonical"/);
+      expect(html).not.toMatch(/<meta[^>]*name="robots"[^>]*noindex/);
+    });
+
+    it.each([
+      ["a 400", "kind=genre"],
+      ["a 404", `week=${BEFORE_FIRST}`],
+      ["an empty week", `week=${GAP_A}`],
+    ])("puts noindex in the head, and no canonical, for %s", async (_label, query) => {
+      const { html } = await page(query);
+      const head = /<head>[\s\S]*<\/head>/.exec(html)?.[0] ?? "";
+      expect(head).toMatch(/<meta[^>]*name="robots"[^>]*content="noindex/);
+      expect(head).not.toMatch(/rel="canonical"/);
+      const main = /<main[\s\S]*<\/main>/.exec(html)?.[0] ?? "";
+      expect(main).not.toMatch(/<meta/);
     });
   });
 });
@@ -431,9 +584,11 @@ describe("the Charts page with no plays", () => {
   it.each(["", "kind=artist", "kind=album"])("says there is no chart yet (%s)", async (query) => {
     const { res, html } = await page(query);
     expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("no-store");
     expect(tableOf(html)).toBeNull();
     expect(textOf(html)).toContain("No chart yet");
-    expect(html).toMatch(/<meta[^>]*name="robots"[^>]*content="noindex/);
+    const head = /<head>[\s\S]*<\/head>/.exec(html)?.[0] ?? "";
+    expect(head).toMatch(/<meta[^>]*name="robots"[^>]*content="noindex/);
   });
 
   it("answers a week the same way, since no week exists", async () => {
@@ -454,27 +609,42 @@ describe("the Charts page when the database fails", () => {
 
   it.each(sites)("%s: shows an outage message with a retry hint and nothing internal", async (site) => {
     const { res, html } = await page("", site);
-    expect(res.status).toBeLessThan(500);
+    expect(res.status).toBe(503);
+    expect(res.headers.get("retry-after")).toBe("60");
+    expect(res.headers.get("cache-control")).toBe("no-store");
     const text = textOf(html);
     expect(text).toContain("Charts are unavailable");
     expect(text).toMatch(/try again/i);
     expect(tableOf(html)).toBeNull();
     expect(hrefsOf(html)).toContain("/charts");
-    expect(html).toMatch(/<meta[^>]*name="robots"[^>]*content="noindex/);
+    const head = /<head>[\s\S]*<\/head>/.exec(html)?.[0] ?? "";
+    expect(head).toMatch(/<meta[^>]*name="robots"[^>]*content="noindex/);
+    expect(head).not.toMatch(/rel="canonical"/);
     // No stack, no error name, no address or key of the database.
     expect(html).not.toMatch(/\bat\s+\S+\s+\(|stack|TypeError|ChartShapeError|ECONNREFUSED|fetch failed|PGRST|127\.0\.0\.1/);
     for (const { value } of env.secrets) expect(html.includes(value)).toBe(false);
   });
 
-  it("keeps the site header and the chart tabs of a failed page", async () => {
-    const { html } = await page("kind=artist", "refused");
+  it("keeps the site header and the chart tabs of a failed page, with the kind that failed marked current", async () => {
+    const { res, html } = await page("kind=artist", "refused");
+    expect(res.status).toBe(503);
     expect(html).toMatch(/<main[^>]*id="content"/);
     expect(html).toMatch(/aria-label="Main"/);
+    const nav = elementOf(html, "nav", /aria-label="Chart type"/);
+    expect(nav, "chart tabs on the outage page").not.toBeNull();
+    expect(hrefsOf(nav!)).toEqual(["/charts", "/charts?kind=artist", "/charts?kind=album"]);
+    expect(nav).toMatch(/<a[^>]*aria-current="page"[^>]*>Artists<\/a>/);
+  });
+
+  it("offers a retry link to the same chart", async () => {
+    const { html } = await page("kind=album", "refused");
+    expect(hrefsOf(html)).toContain("/charts?kind=album");
   });
 
   it("works for the artist and album charts too", async () => {
     for (const kind of ["artist", "album"]) {
-      const { html } = await page(`kind=${kind}`, "refused");
+      const { res, html } = await page(`kind=${kind}`, "refused");
+      expect(res.status).toBe(503);
       expect(textOf(html)).toContain("Charts are unavailable");
     }
   });
@@ -482,13 +652,15 @@ describe("the Charts page when the database fails", () => {
 
 describe("the week still running", () => {
   // This copy of the site talks to a stand-in that answers with fixed weeks, because the real database
-  // reads its own clock and the running week has no counted play before Wednesday.
+  // reads its own clock. The cutoff is Eastern midnight one day back, so the first play of the running week
+  // is counted from Wednesday 00:00 Eastern, and on a Monday or a Tuesday there is no such chart.
   // track: first week 2026-11-02, latest 2026-11-23, current 2026-11-23   (latest is the running week)
   // artist: first = latest = current = 2026-11-23                          (the running week is the only one)
   // album: first 2026-11-09, latest 2026-11-16, current 2026-11-23        (latest is finished)
   it("opens on the week before when the latest week is still running", async () => {
     const { html } = await page("", "inProgress");
     expect(textOf(/<caption[^>]*>([\s\S]*?)<\/caption>/.exec(html)![1]!)).toContain("Nov 16 – Nov 22, 2026");
+    expect(rowsOf(html)[0]!.cells[2]!.text).toContain("Stand-in 2026-11-16");
     expect(textOf(html).toLowerCase()).not.toContain("week in progress");
   });
 
@@ -497,12 +669,14 @@ describe("the week still running", () => {
     expect(hrefsOf(before.html)).toContain("/charts?week=2026-11-23");
     const { html } = await page("week=2026-11-23", "inProgress");
     expect(textOf(/<caption[^>]*>([\s\S]*?)<\/caption>/.exec(html)![1]!)).toContain("Nov 23 – Nov 29, 2026");
+    expect(rowsOf(html)[0]!.cells[2]!.text).toContain("Stand-in 2026-11-23");
     expect(textOf(html).toLowerCase()).toContain("week in progress");
   });
 
   it("opens on the running week, with a note, when it is the only week", async () => {
     const { html } = await page("kind=artist", "inProgress");
     expect(textOf(/<caption[^>]*>([\s\S]*?)<\/caption>/.exec(html)![1]!)).toContain("Nov 23 – Nov 29, 2026");
+    expect(rowsOf(html)[0]!.cells[2]!.text).toContain("Stand-in 2026-11-23");
     expect(textOf(html).toLowerCase()).toContain("week in progress");
     const form = elementOf(html, "form", /method="get"/i)!;
     expect([...form.matchAll(/<option\b/g)]).toHaveLength(1);
@@ -512,14 +686,21 @@ describe("the week still running", () => {
   it("opens on the latest week when it is finished", async () => {
     const { html } = await page("kind=album", "inProgress");
     expect(textOf(/<caption[^>]*>([\s\S]*?)<\/caption>/.exec(html)![1]!)).toContain("Nov 16 – Nov 22, 2026");
+    expect(rowsOf(html)[0]!.cells[2]!.text).toContain("Stand-in 2026-11-16");
     expect(textOf(html).toLowerCase()).not.toContain("week in progress");
   });
 
-  it("refuses a week past the latest", async () => {
-    const { html } = await page("kind=album&week=2026-11-23", "inProgress");
+  it("refuses a week past the latest with 404", async () => {
+    const { res, html } = await page("kind=album&week=2026-11-23", "inProgress");
+    expect(res.status).toBe(404);
     expect(tableOf(html)).toBeNull();
   });
 });
+
+/** A date written YYYY-MM-DD, moved by a number of days. */
+function addDay(date: string, days: number): string {
+  return new Date(Date.parse(`${date}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
+}
 
 function listFiles(dir: string): string[] {
   const out: string[] = [];

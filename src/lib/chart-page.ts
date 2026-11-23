@@ -14,9 +14,19 @@ export type SearchParams = Record<string, string | string[] | undefined>;
 const PAGE_PARAMS = ["kind", "week"] as const;
 
 /**
- * Reads the page address. Returns null for a kind that is not a chart, for a week that is not a Monday date,
- * and for a name given twice. The week and kind rules are the route's own, so the page and the API agree.
+ * Reads the page address from a query string. Returns null for a kind that is not a chart, for a week that is not a
+ * Monday date, and for a name given twice. The kind and the shape of a week are the route's own rules.
+ * The range is not: the route accepts any week up to the current one, and the page only a week that has a chart
+ * (see `resolveWeek`).
  */
+export function parseChartsSearch(search: URLSearchParams): ChartsView | null {
+  const own = new URLSearchParams();
+  for (const name of PAGE_PARAMS) for (const value of search.getAll(name)) own.append(name, value);
+  const query = parseChartQuery(own);
+  return query ? { kind: query.kind, week: query.week } : null;
+}
+
+/** The same, for the `searchParams` object a Next page receives. */
 export function parseChartsParams(params: SearchParams): ChartsView | null {
   const search = new URLSearchParams();
   for (const name of PAGE_PARAMS) {
@@ -24,8 +34,7 @@ export function parseChartsParams(params: SearchParams): ChartsView | null {
     if (value === undefined) continue;
     for (const one of Array.isArray(value) ? value : [value]) search.append(name, one);
   }
-  const query = parseChartQuery(search);
-  return query ? { kind: query.kind, week: query.week } : null;
+  return parseChartsSearch(search);
 }
 
 /** The address of a chart. The default kind and an unset week are left out, so the plain address stays plain. */
@@ -66,7 +75,9 @@ export type WeekBounds = Pick<ChartBounds, "firstWeek" | "latestWeek" | "current
 
 /**
  * The week the page opens on, and whether it is still running.
- * A chart trails real time, so from Wednesday to Sunday the latest chart week is the one still running.
+ * A chart trails real time. The cutoff is the start of the Eastern day, one day back, so a play counts from the second
+ * midnight after its day: Monday's plays from Wednesday 00:00 Eastern. From then until Sunday the latest chart week is
+ * the one still running.
  * That week is half a chart, so the page opens on the week before it, when that week is on the chart.
  * Only when the running week is the only week does it open there, flagged as in progress.
  * The current week is the database's own reading of the New York week, never the browser's clock.
@@ -94,7 +105,11 @@ export type WeekChoice =
       next: string | null;
     };
 
-/** Picks the week to show. A week the caller named must lie between the first and the latest week. */
+/**
+ * Picks the week to show. A week the caller named must lie between the first and the latest week.
+ * The API is wider: it also accepts the weeks after the latest, up to the current one, and answers them with an
+ * empty chart. The page answers those with out_of_range (404), because it only lists weeks that have a chart.
+ */
 export function resolveWeek(requested: string | null, bounds: WeekBounds): WeekChoice {
   const { firstWeek, latestWeek, currentWeek } = bounds;
   if (firstWeek === null || latestWeek === null) return { status: "no_data" };
@@ -185,3 +200,36 @@ export const COUNTING_RULES: readonly string[] = [
   "Charts trail real time by a day.",
   "Ties break by minutes listened.",
 ];
+
+/** What the page has to show for one address. The proxy reads the database once and decides this. */
+export type ChartPageData =
+  | { status: "ok"; bounds: WeekBounds; choice: Extract<WeekChoice, { status: "ok" }>; rows: ChartRow[] }
+  | { status: "no_data" }
+  | { status: "out_of_range"; bounds: WeekBounds }
+  | { status: "invalid" }
+  | { status: "unavailable" };
+
+/**
+ * The HTTP status of each state: 400 for an address that is not valid, 404 for a week that has no chart,
+ * 503 when the database fails, and 200 for a chart and for no plays at all (the empty state).
+ */
+export function statusFor(data: ChartPageData): 200 | 400 | 404 | 503 {
+  switch (data.status) {
+    case "invalid":
+      return 400;
+    case "out_of_range":
+      return 404;
+    case "unavailable":
+      return 503;
+    default:
+      return 200;
+  }
+}
+
+/** The cache policy of the API's chart answer, which a chart page shares. */
+export const CHART_CACHE_CONTROL = "public, s-maxage=300, stale-while-revalidate=600";
+
+/** Only a chart may be kept by a shared cache. A message, an error and the empty state never are. */
+export function cacheControlFor(data: ChartPageData): string {
+  return data.status === "ok" ? CHART_CACHE_CONTROL : "no-store";
+}

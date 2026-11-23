@@ -62,7 +62,7 @@ export function ChartTable({ kind, week, rows }: { kind: ChartKind; week: string
         <tr role="row">
           {COLUMNS.map((name) => (
             <th key={name} scope="col" role="columnheader">
-              {name === "Weeks" ? <abbr title="Weeks on chart">Weeks</abbr> : name}
+              {name}
             </th>
           ))}
         </tr>
@@ -77,7 +77,9 @@ export function ChartTable({ kind, week, rows }: { kind: ChartKind; week: string
               <Move row={row} />
             </td>
             <th scope="row" role="rowheader" className={styles.title}>
-              <span className={styles.name}>{displayName(kind, row)}</span>
+              <span className={styles.name} data-part="name">
+                {displayName(kind, row)}
+              </span>
               {row.artist !== null ? (
                 <>
                   <span className={styles.sr}> by </span>
@@ -88,7 +90,14 @@ export function ChartTable({ kind, week, rows }: { kind: ChartKind; week: string
               ) : null}
             </th>
             <td role="cell" className={`${styles.stat} ${styles.last}`} data-label="Last wk">
-              {lastWeekLabel(row)}
+              {row.last_week_rank === null ? (
+                <>
+                  <span aria-hidden="true">{lastWeekLabel(row)}</span>
+                  <span className={styles.sr}>No rank last week</span>
+                </>
+              ) : (
+                lastWeekLabel(row)
+              )}
             </td>
             <td role="cell" className={`${styles.stat} ${styles.peak}`} data-label="Peak">
               {row.peak_rank}

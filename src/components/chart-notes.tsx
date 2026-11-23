@@ -16,8 +16,6 @@ export function ChartMessage({
 }) {
   return (
     <section className={styles.message}>
-      {/* A page that holds no chart is not worth indexing. */}
-      <meta name="robots" content="noindex" />
       <h2 className={styles.messageTitle}>{title}</h2>
       <p>{children}</p>
       <p>
@@ -25,6 +23,18 @@ export function ChartMessage({
           {action}
         </Link>
       </p>
+    </section>
+  );
+}
+
+/** Takes the place of the table when a week inside the range has no counted play. */
+export function EmptyWeek({ kindLabel, weekLabel }: { kindLabel: string; weekLabel: string }) {
+  return (
+    <section className={styles.emptyWeek}>
+      <p className={styles.emptyCaption}>
+        Top {kindLabel}, {weekLabel}
+      </p>
+      <p className={styles.emptyText}>No plays counted this week.</p>
     </section>
   );
 }

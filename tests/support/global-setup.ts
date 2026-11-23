@@ -23,8 +23,9 @@ import type { SiteName } from "./env";
  *  - missingEnv: has no database variables at all
  *  - malformed: points at a stub that answers the chart functions and the poller tables with a bad shape
  *  - inProgress: points at a stub that answers the chart functions with fixed weeks, so the Charts page can be
- *    tested on a day when the running week has a chart. The real database reads its own clock, and no play
- *    counts for the running week before Wednesday.
+ *    tested on a day when the running week has a chart. The real database reads its own clock, and the chart
+ *    cutoff is Eastern midnight one day back: a Monday play counts from Wednesday 00:00 Eastern, so on a
+ *    Monday or a Tuesday the running week has no chart.
  *
  * Keys are read from the Supabase CLI and kept in process memory.
  * They are never written to a file or printed. Each site's stdout and stderr go
@@ -157,7 +158,7 @@ function stubDatabase(): Promise<{ port: number }> {
  *  - track: first 2026-11-02, latest 2026-11-23: the latest week is the running one
  *  - artist: first, latest and current are all 2026-11-23: the running week is the only one
  *  - album: first 2026-11-09, latest 2026-11-16: the latest week is finished
- * Every chart it sends holds the same one row.
+ * Every chart it sends holds one row, named after the week that was asked for, so a test can see which week the page asked for.
  */
 function inProgressDatabase(): Promise<{ port: number }> {
   return new Promise((resolve, reject) => {
@@ -165,7 +166,7 @@ function inProgressDatabase(): Promise<{ port: number }> {
       let body = "";
       req.on("data", (chunk: Buffer) => (body += chunk.toString("utf8")));
       req.on("end", () => {
-        let args: { p_kind?: string } = {};
+        let args: { p_kind?: string; p_week?: string } = {};
         try {
           args = JSON.parse(body || "{}") as typeof args;
         } catch {
@@ -183,7 +184,7 @@ function inProgressDatabase(): Promise<{ port: number }> {
         }
         if (req.url?.includes("/rpc/chart_weekly")) {
           return send(200, [
-            { rank: 1, key: "k", name: "Stand-in", artist: "Stand-in artist", plays: 3, minutes: 9, last_week_rank: 1, peak_rank: 1, weeks_on_chart: 4 },
+            { rank: 1, key: "k", name: `Stand-in ${args.p_week ?? "none"}`, artist: "Stand-in artist", plays: 3, minutes: 9, last_week_rank: 1, peak_rank: 1, weeks_on_chart: 4 },
           ]);
         }
         return send(404, { message: "not found" });
@@ -287,10 +288,12 @@ async function startSite(
   env: NodeJS.ProcessEnv,
 ): Promise<string> {
   const port = await freePort();
-  const site = launch(name, ["start", "-p", String(port), "-H", "127.0.0.1"], env);
+  // The host is `localhost`, not 127.0.0.1: Next.js writes 127.0.0.1 as localhost in the URL a proxy sees, and a rewrite
+  // from the proxy to a URL with another host than the server's own is sent out as a request to that host, which hangs.
+  const site = launch(name, ["start", "-p", String(port), "-H", "localhost"], env);
   sites.push(site);
 
-  const url = `http://127.0.0.1:${port}`;
+  const url = `http://localhost:${port}`;
   const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
     if (site.hasExited()) {
