@@ -15,7 +15,9 @@ Status: in development.
 
 ## Fake data for local work
 
-`npm run db:seed-fake` fills the local Supabase stack with about two years of invented plays. It refuses any address that is not 127.0.0.1 or localhost, and it is safe to run again. `fixtures/fake-export/` holds a fake export file in the assumed Spotify format. Its keys are unverified guesses and its data is fake.
+`npm run db:seed-fake` fills the local Supabase stack with about 11,000 invented plays across two years. It needs Node 22.18 or later, which runs the TypeScript script without a flag. It refuses any address that is not 127.0.0.1 or localhost. A rerun replaces the fake rows: it deletes the plays whose track address is a fake one, then inserts a fresh set, so a rerun on any day leaves one set. Plays that are not fake are never touched.
+
+`fixtures/fake-export/` holds a fake export file in the assumed Spotify format. Its keys are unverified guesses and its data is fake.
 
 ## Make your own
 
