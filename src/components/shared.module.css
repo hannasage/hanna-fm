@@ -48,7 +48,25 @@
 }
 
 /* Every link or button that has a hover state underlines in the same way. */
-.hoverUnderline:hover {
+.hover:hover {
   text-decoration: underline;
   text-underline-offset: 0.25em;
+}
+
+/*
+ * A fine pointer also gets a faint wash behind the control, which fades in over 120 ms. Color only: no movement, no size change.
+ * The fade is set on the hovered state alone, so leaving is instant, and so is the current tab changing: its fill never fades
+ * while its text colour flips. A touch screen has no hover, so it gets none (a tap would leave the wash behind).
+ * Focus gets no transition: a ring that fades in would arrive late for a person on the keyboard.
+ */
+@media (hover: hover) {
+  .hover:not([aria-current="page"]):hover {
+    background-color: var(--wash);
+  }
+}
+
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .hover:not([aria-current="page"]):hover {
+    transition: background-color 120ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
 }

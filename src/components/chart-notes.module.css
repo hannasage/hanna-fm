@@ -23,7 +23,7 @@
 
 /* The way on is a button-sized link, like the week links, so it is a 44 px target. */
 .action {
-  composes: control hoverUnderline from "./shared.module.css";
+  composes: control hover from "./shared.module.css";
   display: inline-flex;
   align-items: center;
   padding: 0.25rem 1rem;
