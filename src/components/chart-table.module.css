@@ -157,14 +157,7 @@
 }
 
 .sr {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  margin: -1px;
-  padding: 0;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
+  composes: sr from "./shared.module.css";
 }
 
 @media (max-width: 63.9375rem) {

@@ -304,6 +304,29 @@ describe("the Charts page with data", () => {
       expect(textOf(first.html)).toContain("Previous week (first week)");
     });
 
+    it("gives a week link the hover style and a missing one none, so a switched-off link never looks live on a mouse", async () => {
+      /** The two week controls in page order, Previous then Next, with their tag and class names. */
+      const stepsOf = (html: string) =>
+        [...html.matchAll(/<(a|span)\b([^>]*\bclass="[^"]*step[^"]*"[^>]*)>/g)].map((m) => ({
+          tag: m[1],
+          names: (/class="([^"]*)"/.exec(m[2] ?? "")?.[1] ?? "").split(/\s+/),
+        }));
+      const hasHover = (names: string[]) => names.some((name) => name === "hover" || name.endsWith("_hover"));
+
+      // At the first week Previous is a switched-off span and Next is a live link.
+      const [off, live] = stepsOf((await page(`week=${FIRST}`)).html);
+      expect([off?.tag, live?.tag]).toEqual(["span", "a"]);
+      expect(hasHover(off!.names)).toBe(false);
+      expect(hasHover(live!.names)).toBe(true);
+
+      // At the latest week Next is the switched-off span and Previous is the live link.
+      const [livePrevious, offNext, ...rest] = stepsOf((await page(`week=${W3}`)).html);
+      expect([livePrevious?.tag, offNext?.tag]).toEqual(["a", "span"]);
+      expect(hasHover(livePrevious!.names)).toBe(true);
+      expect(hasHover(offNext!.names)).toBe(false);
+      expect(rest).toHaveLength(0);
+    });
+
     it("keeps the kind in the previous and next links", async () => {
       const { html } = await page(`kind=album&week=${W2}`);
       expect(hrefsOf(html)).toEqual(expect.arrayContaining([`/charts?kind=album&week=${W1}`, `/charts?kind=album&week=${W3}`]));

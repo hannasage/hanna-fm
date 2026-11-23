@@ -44,7 +44,7 @@ export function ChartWeekBar({ kind, bounds, choice }: Props) {
           Previous week<span className={styles.sr}> (first week)</span>
         </span>
       ) : (
-        <Link rel="prev" prefetch={false} className={styles.step} href={chartsHref({ kind, week: choice.previous })}>
+        <Link rel="prev" prefetch={false} className={`${styles.step} ${styles.stepLink}`} href={chartsHref({ kind, week: choice.previous })}>
           <span aria-hidden="true">&larr;</span>
           Previous week
         </Link>
@@ -56,7 +56,7 @@ export function ChartWeekBar({ kind, bounds, choice }: Props) {
           <span aria-hidden="true">&rarr;</span>
         </span>
       ) : (
-        <Link rel="next" prefetch={false} className={styles.step} href={chartsHref({ kind, week: choice.next })}>
+        <Link rel="next" prefetch={false} className={`${styles.step} ${styles.stepLink}`} href={chartsHref({ kind, week: choice.next })}>
           Next week
           <span aria-hidden="true">&rarr;</span>
         </Link>

@@ -1,8 +1,21 @@
 /*
  * Pieces that more than one component uses. A component takes one with `composes`.
- * A composed rule and a local rule never set the same property, so the order of the files does not matter.
+ * A composed rule and a rule in another file never set the same property, so the order of the files does not matter.
  * Where a local rule must beat a composed one it uses a longer selector, such as `.step.stepOff`.
+ * Inside this file, at equal specificity, the later rule wins.
  */
+
+/* Text for a screen reader that is not drawn. */
+.sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 
 /* The lamp: a small square before a line of text, like an indicator on a front panel. It is on (signal colour) by default. */
 .lamp {
@@ -21,7 +34,7 @@
   print-color-adjust: exact;
 }
 
-/* The same lamp, switched off: an outline and no fill. */
+/* The same lamp, switched off: an outline and no fill. It sits after `.lamp::before`, so it wins. */
 .lampOff::before {
   background: transparent;
   border: 1px solid var(--muted);
@@ -39,7 +52,7 @@
 
 /* A control with a box: the week select, Show, the week links and the way on from a message. */
 .control {
-  min-height: 2.75rem;
+  min-height: var(--target);
   border: 1px solid var(--ink);
   border-radius: 0;
   color: var(--ink);
@@ -67,6 +80,6 @@
 
 @media (hover: hover) and (prefers-reduced-motion: no-preference) {
   .hover:not([aria-current="page"]):hover {
-    transition: background-color 120ms cubic-bezier(0.16, 1, 0.3, 1);
+    transition: background-color var(--t-hover) var(--ease-out);
   }
 }
