@@ -15,7 +15,9 @@ const count = new Intl.NumberFormat("en-US");
 
 function Move({ row }: { row: ChartRow }) {
   const flag = flagOf(row);
-  if (flag !== null) return <span className={styles.flag}>{flag}</span>;
+  if (flag !== null) {
+    return <span className={`${styles.flag} ${flag === "NEW" ? styles.flagNew : styles.flagBack}`}>{flag}</span>;
+  }
 
   const { direction, steps } = movementOf(row);
   const places = `${steps} ${steps === 1 ? "place" : "places"}`;
@@ -23,21 +25,29 @@ function Move({ row }: { row: ChartRow }) {
     case "up":
       return (
         <>
-          <span aria-hidden="true">{"▲"} {steps}</span>
+          <span aria-hidden="true">
+            <span className={styles.glyph}>{"▲"}</span>
+            {steps}
+          </span>
           <span className={styles.sr}>Up {places}</span>
         </>
       );
     case "down":
       return (
         <>
-          <span aria-hidden="true">{"▼"} {steps}</span>
+          <span aria-hidden="true">
+            <span className={styles.glyph}>{"▼"}</span>
+            {steps}
+          </span>
           <span className={styles.sr}>Down {places}</span>
         </>
       );
     case "same":
       return (
         <>
-          <span aria-hidden="true">=</span>
+          <span aria-hidden="true" className={styles.same}>
+            =
+          </span>
           <span className={styles.sr}>No change</span>
         </>
       );

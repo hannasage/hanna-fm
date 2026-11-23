@@ -6,23 +6,28 @@
 
 .table {
   width: 100%;
-  margin-top: 1.5rem;
+  margin-top: 2rem;
   border-collapse: collapse;
   font-variant-numeric: tabular-nums;
+  line-height: 1.3;
 }
 
+/* The caption names the chart being read, so it is the second voice on the page after the h1. */
 .caption {
   padding-bottom: 0.75rem;
-  color: var(--muted);
+  color: var(--ink);
   font-family: var(--font-mono);
-  font-size: 0.875rem;
-  letter-spacing: 0.02em;
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.4;
   text-align: left;
 }
 
 .head th {
   padding: 0.5rem 0.5rem;
   border-bottom: 2px solid var(--ink);
+  color: var(--muted);
   font-family: var(--font-mono);
   font-size: 0.75rem;
   font-weight: 600;
@@ -40,9 +45,16 @@
 }
 
 .row > * {
-  padding: 0.75rem 0.5rem;
+  padding: 0.5rem 0.5rem;
   border-bottom: 1px solid var(--rule);
   vertical-align: middle;
+}
+
+/* On a wide row the title and the numbers sit far apart. A faint band on every second row guides the eye across. */
+@media (min-width: 64rem) {
+  .row:nth-child(even) {
+    background: var(--wash);
+  }
 }
 
 .rank {
@@ -58,6 +70,17 @@
   font-size: 0.875rem;
   font-weight: 600;
   white-space: nowrap;
+}
+
+/* The arrow is a small mark and the number is the reading, so the arrow is set smaller than the number. */
+.glyph {
+  display: inline-block;
+  width: 1.5em;
+  font-size: 0.875em;
+}
+
+.same {
+  color: var(--muted);
 }
 
 .title {
@@ -79,20 +102,39 @@
 
 .stat {
   width: 5.5rem;
+  color: var(--muted);
   font-family: var(--font-mono);
   font-size: 0.9375rem;
   text-align: right;
 }
 
-/* A flag is text in a box, so it reads without colour. */
+/* Plays decide the rank, so they are the one number set in full ink. */
+.plays {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/*
+ * A flag is text in a box, so it reads without colour. A first week (NEW) is a solid block of the signal colour.
+ * A return (RE-ENTRY) is the same box, outlined. The two never look alike.
+ */
 .flag {
   display: inline-block;
-  padding: 0.0625rem 0.375rem;
-  border: 1px solid currentColor;
-  color: var(--signal);
+  padding: 0.125rem 0.375rem;
+  border: 1px solid var(--signal);
   font-size: 0.75rem;
   font-weight: 700;
   letter-spacing: 0.06em;
+  line-height: 1.2;
+}
+
+.flagNew {
+  background: var(--signal);
+  color: var(--bg);
+}
+
+.flagBack {
+  color: var(--signal);
 }
 
 .sr {
@@ -193,8 +235,8 @@
     content: attr(data-label) / "";
     display: block;
     color: var(--faint);
-    font-size: 0.6875rem;
-    letter-spacing: 0.04em;
+    font-size: 0.75rem;
+    letter-spacing: 0;
     text-transform: uppercase;
   }
 }
