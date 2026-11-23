@@ -95,6 +95,29 @@ const NONE = {
   schemaCreate: [],
 };
 
+/**
+ * A valid insert row and a valid update for each table. PostgREST checks column names
+ * before privileges, so a made-up column would be refused for the wrong reason.
+ * A new table needs an entry here, or the write test below fails on purpose.
+ */
+const WRITE_PROBES: Record<string, { insert: Record<string, unknown>; update: Record<string, unknown> }> = {
+  health_check: {
+    insert: { label: "browser write" },
+    update: { label: "browser write" },
+  },
+  plays: {
+    insert: {
+      track_uri: "spotify:track:browserwrite",
+      track_name: "browser write",
+      artist_name: "browser write",
+      ended_at: "2026-01-01T00:00:00Z",
+      ms_played: 1,
+      source: "poll",
+    },
+    update: { track_name: "browser write" },
+  },
+};
+
 function restHeaders(key: string, extra: Record<string, string> = {}) {
   return { apikey: key, Authorization: `Bearer ${key}`, ...extra };
 }
@@ -141,6 +164,10 @@ describe("row-level security", () => {
   it("finds the health_check table, which holds the one fixture row", async () => {
     expect(tables).toContain("health_check");
     expect((await serviceRows("health_check")).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("finds the plays table", () => {
+    expect(tables).toContain("plays");
   });
 
   it("is enabled and forced on every public table", async () => {
@@ -197,6 +224,48 @@ describe("privileges of anon, authenticated and PUBLIC", () => {
   });
 });
 
+describe("the browser roles in the database, with a play stored", () => {
+  // The rows are inserted inside a transaction that rolls back, so no other test sees them.
+  async function inTransaction(role: string, statement: string, values: unknown[] = []) {
+    await db.query("begin");
+    try {
+      await db.query(
+        `insert into public.plays (track_uri, track_name, artist_name, ended_at, ms_played, source)
+         values ('spotify:track:synthetic1', 'Synthetic Track 1', 'Synthetic Artist', now(), 1000, 'export')`,
+      );
+      await db.query(`set local role ${role}`);
+      return await db.query(statement, values);
+    } finally {
+      await db.query("rollback");
+    }
+  }
+
+  const insertSql = `insert into public.plays (track_uri, track_name, artist_name, ended_at, ms_played, source)
+                     values ('spotify:track:synthetic2', 'Synthetic Track 2', 'Synthetic Artist', now(), 1000, 'poll')`;
+
+  it.each(["anon", "authenticated"])("%s cannot read plays", async (role) => {
+    await expect(inTransaction(role, "select * from public.plays")).rejects.toMatchObject({
+      code: "42501",
+    });
+    await expect(inTransaction(role, "select count(*) from public.plays")).rejects.toMatchObject({
+      code: "42501",
+    });
+  });
+
+  it.each(["anon", "authenticated"])("%s cannot write plays", async (role) => {
+    await expect(inTransaction(role, insertSql)).rejects.toMatchObject({ code: "42501" });
+    await expect(
+      inTransaction(role, "update public.plays set track_name = 'x'"),
+    ).rejects.toMatchObject({ code: "42501" });
+    await expect(inTransaction(role, "delete from public.plays")).rejects.toMatchObject({
+      code: "42501",
+    });
+    await expect(inTransaction(role, "truncate public.plays")).rejects.toMatchObject({
+      code: "42501",
+    });
+  });
+});
+
 describe.each([
   ["anon key", env.anonKey],
   ["publishable key", env.publishableKey ?? ""],
@@ -221,6 +290,8 @@ describe.each([
 
   it("writes to no table", async () => {
     for (const table of tables) {
+      const probe = WRITE_PROBES[table];
+      expect(probe, `public.${table} has no entry in WRITE_PROBES`).toBeDefined();
       const before = await serviceRows(table);
       const json = restHeaders(key, {
         "Content-Type": "application/json",
@@ -230,12 +301,12 @@ describe.each([
       const insert = await fetch(`${env.apiUrl}/rest/v1/${table}`, {
         method: "POST",
         headers: json,
-        body: JSON.stringify({ label: "browser write" }),
+        body: JSON.stringify(probe!.insert),
       });
       const update = await fetch(`${env.apiUrl}/rest/v1/${table}?id=gte.0`, {
         method: "PATCH",
         headers: json,
-        body: JSON.stringify({ label: "browser write" }),
+        body: JSON.stringify(probe!.update),
       });
       const remove = await fetch(`${env.apiUrl}/rest/v1/${table}?id=gte.0`, {
         method: "DELETE",

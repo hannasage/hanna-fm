@@ -37,4 +37,13 @@ describe("GitHub Actions workflows", () => {
     expect(text).toMatch(/tail -n 50[^\n]*supabase-start\.log/);
     expect(text).toMatch(/grep -v[iE]*\s[^\n]*(key|token|secret)/i);
   });
+
+  it("keeps no git credentials after checkout", () => {
+    for (const file of workflows) {
+      const text = readFileSync(file, "utf8");
+      const steps = text.split(/\n(?=\s*- )/).filter((step) => /uses:\s*actions\/checkout@/.test(step));
+      expect(steps.length).toBeGreaterThan(0);
+      for (const step of steps) expect(step).toMatch(/persist-credentials:\s*false/);
+    }
+  });
 });
