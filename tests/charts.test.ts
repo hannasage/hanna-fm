@@ -686,6 +686,34 @@ describe("GET /api/charts/weekly: bad input", () => {
     expect(res.status).toBe(400);
   });
 
+  it.each([
+    ["a parameter the route does not know", "foo=1"],
+    ["a known value with a parameter the route does not know", "week=2026-02-02&utm=x"],
+    ["a cache-busting random value", "kind=track&cb=8f3a2c"],
+    ["a parameter with no value", "foo"],
+    ["a parameter with no name", "=x"],
+    ["a parameter named like a database argument", "p_delay_days=0"],
+    ["a known name in capitals", "Week=2026-02-02"],
+    ["a known name in capitals beside valid ones", "limit=5&KIND=track"],
+  ])("answers 400 with no detail for %s, before it asks the database", async (_label, query) => {
+    // The refused site has no database. A 400 here proves the check ran first. A 503 would mean it asked.
+    for (const site of ["healthy", "refused"] as SiteName[]) {
+      const res = await getChart(query, site);
+
+      expect(res.status, site).toBe(400);
+      expect(res.headers.get("cache-control")).toBe("no-store");
+      expect(await res.json()).toEqual({ status: "bad_request" });
+    }
+  });
+
+  it("does not echo an unknown parameter name or value", async () => {
+    const res = await getChart("zzz-marker=qqq-marker");
+    const text = await res.text();
+
+    expect(res.status).toBe(400);
+    expect(/zzz|qqq|marker/.test(text)).toBe(false);
+  });
+
   it("accepts the edges: the lowest and highest limit and each kind", async () => {
     await insertPlays([play("a", "2026-02-03T12:00:00Z")]);
     for (const q of ["limit=1", "limit=100", "kind=track", "kind=artist", "kind=album", "week=2026-02-02"]) {

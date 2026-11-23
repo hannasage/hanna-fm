@@ -26,7 +26,8 @@ const CHART_TIMEOUT_MS = 8_000;
 export async function GET(request: Request): Promise<Response> {
   const query = parseChartQuery(new URL(request.url).searchParams);
   if (!query) {
-    // Nothing about the bad value goes back to the caller.
+    // Any unknown parameter, bad value or repeat lands here, before the database is asked.
+    // Nothing about it goes back to the caller.
     return Response.json({ status: "bad_request" }, { status: 400, headers: ERROR_HEADERS });
   }
 
@@ -51,6 +52,8 @@ export async function GET(request: Request): Promise<Response> {
       }
       week = bounds.latestWeek;
     } else {
+      // The range needs the first qualifying week, which only the database knows. Checking it before
+      // the query would mean guessing a bound, so it stays here and costs one cached-shape query.
       if (!weekInRange(query.week, bounds)) {
         return Response.json({ status: "bad_request" }, { status: 400, headers: ERROR_HEADERS });
       }

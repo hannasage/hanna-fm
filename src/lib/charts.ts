@@ -44,11 +44,17 @@ function isMonday(text: string): boolean {
   return isIsoDate(text) && new Date(`${text}T00:00:00Z`).getUTCDay() === 1;
 }
 
+/** The only query parameters the route reads. Any other name is refused, so a caller cannot invent cache keys. */
+const ALLOWED_PARAMS: readonly string[] = ["week", "kind", "limit"];
+
 /**
- * Reads the query string. Returns null for any value that is not allowed.
- * It never says which value was wrong, because the caller learns nothing from a 400.
+ * Reads the query string. Returns null for any parameter or value that is not allowed.
+ * It never says which one was wrong, because the caller learns nothing from a 400.
  */
 export function parseChartQuery(params: URLSearchParams): ChartQuery | null {
+  for (const name of params.keys()) {
+    if (!ALLOWED_PARAMS.includes(name)) return null;
+  }
   const week = once(params, "week");
   const kind = once(params, "kind");
   const limit = once(params, "limit");
