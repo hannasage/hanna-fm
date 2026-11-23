@@ -15,7 +15,7 @@ type Play = {
   artist_name: string;
   album_name: string | null;
   ended_at: string;
-  ms_played: number;
+  ms_played: number | null;
   source: "export" | "poll";
 };
 
@@ -183,6 +183,45 @@ describe("the plays table", () => {
     } finally {
       await db.end();
     }
+  });
+
+  it("accepts a poll row with no ms_played, because the poller does not know the play length", async () => {
+    const res = await insertPlays([play(1, { source: "poll", ms_played: null })]);
+
+    expect(res.status).toBe(201);
+    await clearPlays();
+  });
+
+  it("rejects an export row with no ms_played", async () => {
+    const res = await insertPlays([play(1, { source: "export", ms_played: null })]);
+    const body = (await res.json()) as { code: string; message: string };
+
+    expect(res.status).toBe(400);
+    expect(body.code).toBe("23514");
+    expect(body.message).toContain("plays_export_needs_ms");
+  });
+
+  it("still rejects a poll row with a negative ms_played", async () => {
+    const res = await insertPlays([play(1, { source: "poll", ms_played: -1 })]);
+
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { code: string }).code).toBe("23514");
+  });
+
+  it("counts export rows and poll rows with no ms_played alike", async () => {
+    await clearPlays();
+    expect(
+      (
+        await insertPlays([
+          play(1, { source: "export", ms_played: 5000 }),
+          play(2, { source: "poll", ms_played: null }),
+          play(3, { source: "poll", ms_played: 200000 }),
+        ])
+      ).status,
+    ).toBe(201);
+
+    expect(await (await getCount()).json()).toEqual({ count: 3 });
+    await clearPlays();
   });
 
   it("accepts a zero ms_played and a missing album", async () => {
