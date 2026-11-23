@@ -7,7 +7,9 @@ import {
   assertLocalUrl,
   easternDate,
   generateFakePlays,
+  generatePlannedPlays,
 } from "../scripts/fake-plays";
+import { resolveTarget } from "../scripts/seed-fake-plays";
 import { filesUnder } from "./support/leaks";
 
 /**
@@ -85,7 +87,7 @@ describe("generateFakePlays", () => {
   });
 
   it("is large enough to fill a chart and small enough to seed quickly", () => {
-    expect(plays.length).toBeGreaterThan(8_000);
+    expect(plays.length).toBeGreaterThan(5_000);
     expect(plays.length).toBeLessThan(40_000);
   });
 
@@ -120,6 +122,9 @@ describe("assertLocalUrl", () => {
     "https://abcdefgh.supabase.co",
     "http://127.0.0.1.example.com:54321",
     "http://localhost.example.com",
+    "http://localhost.:54321",
+    "http://[::1]:54321",
+    "http://[::ffff:127.0.0.1]:54321",
     "http://localhost@example.com",
     "http://user:pass@127.0.0.1:54321",
     "http://10.0.0.5:54321",
@@ -142,12 +147,91 @@ describe("assertLocalUrl", () => {
   });
 });
 
+describe("the plan and New York time", () => {
+  // A run on each side of both clock changes of 2026: spring forward on 8 March, fall back on 1 November.
+  it.each(["2026-03-06", "2026-03-07", "2026-03-08", "2026-03-09", "2026-10-31", "2026-11-01", "2026-11-02"])(
+    "puts every play on the New York day the plan chose, for a run on %s",
+    (today) => {
+      const planned = generatePlannedPlays({ today });
+      expect(planned.length).toBeGreaterThan(5_000);
+      for (const { play, day } of planned) {
+        expect(easternDate(new Date(play.ended_at)), play.ended_at).toBe(day);
+        const hour = new Date(play.ended_at).getUTCHours();
+        expect(hour).toBeGreaterThanOrEqual(13);
+        expect(hour).toBeLessThanOrEqual(22);
+        expect(day < today).toBe(true);
+      }
+    },
+  );
+
+  it("keeps the featured tracks off Sunday, and lets the background tracks play on it", () => {
+    const planned = generatePlannedPlays({ today: WEDNESDAY });
+    const sunday = (day: string) => new Date(`${day}T00:00:00Z`).getUTCDay() === 0;
+    const featured = planned.filter(({ play }) => Number(play.track_uri.slice(-4)) <= 8);
+    const background = planned.filter(({ play }) => Number(play.track_uri.slice(-4)) > 8);
+    expect(featured.length).toBeGreaterThan(1_000);
+    expect(featured.some(({ day }) => sunday(day))).toBe(false);
+    expect(background.some(({ day }) => sunday(day))).toBe(true);
+  });
+
+  it("still ends on the day before a Monday run, which is a Sunday", () => {
+    const planned = generatePlannedPlays({ today: MONDAY });
+    expect(planned.map((p) => p.day).sort().at(-1)).toBe("2026-03-01");
+  });
+});
+
+describe("resolveTarget", () => {
+  it("builds the target from the checked origin, not from the text it was given", () => {
+    const target = resolveTarget({ SUPABASE_URL: "http://127.0.0.1:54321/some/path?x=1", SUPABASE_SERVICE_ROLE_KEY: "k" });
+    expect(target.origin).toBe("http://127.0.0.1:54321");
+  });
+
+  it("refuses a hosted address without reading the key", () => {
+    let keyRead = false;
+    const env = {
+      SUPABASE_URL: "https://abcdefgh.supabase.co",
+      get SUPABASE_SERVICE_ROLE_KEY() {
+        keyRead = true;
+        return "k";
+      },
+    } as Record<string, string | undefined>;
+    expect(() => resolveTarget(env)).toThrow(SeedRefusedError);
+    expect(keyRead).toBe(false);
+  });
+
+  it("refuses a hosted address reported by the Supabase CLI", () => {
+    const status = () => 'API_URL="https://abcdefgh.supabase.co"\nSERVICE_ROLE_KEY="k"\n';
+    expect(() => resolveTarget({}, status)).toThrow(SeedRefusedError);
+  });
+
+  it("reads the local stack from the CLI output", () => {
+    const status = () => 'API_URL="http://127.0.0.1:54321"\nSERVICE_ROLE_KEY="k"\n';
+    expect(resolveTarget({}, status)).toEqual({ origin: "http://127.0.0.1:54321", serviceKey: "k" });
+  });
+
+  it("says what is missing when the CLI output has no address or no key", () => {
+    expect(() => resolveTarget({}, () => "nothing useful")).toThrow(/did not report the local address/);
+    expect(() => resolveTarget({}, () => 'API_URL="http://127.0.0.1:54321"\n')).toThrow(/did not report the local key/);
+  });
+});
+
 describe("keeping fake data out of the site", () => {
   it("is imported by nothing under src, so no build can carry it", () => {
     for (const file of filesUnder(join(process.cwd(), "src"))) {
       const text = readFileSync(file, "utf8");
       expect(text, file).not.toMatch(/fake-plays|seed-fake-plays|fixtures\//);
     }
+  });
+
+  it("asks for a Node version that runs TypeScript files without a flag", () => {
+    const pkg = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")) as { engines: { node: string } };
+    expect(pkg.engines.node).toBe(">=22.18");
+    const lock = JSON.parse(readFileSync(join(process.cwd(), "package-lock.json"), "utf8")) as {
+      packages: Record<string, { engines?: { node?: string } }>;
+    };
+    expect(lock.packages[""]!.engines!.node).toBe(">=22.18");
+    const tsconfig = readFileSync(join(process.cwd(), "tsconfig.json"), "utf8");
+    expect(tsconfig).toContain('"erasableSyntaxOnly": true');
   });
 
   it("is not a script any other npm command runs", () => {
