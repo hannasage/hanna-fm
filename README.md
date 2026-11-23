@@ -13,6 +13,10 @@ Status: in development.
 - Four gates must pass at zero errors before a commit: typecheck, lint, test, build.
 - Work on a branch and open a pull request. Never commit to `main`.
 
+## Fake data for local work
+
+`npm run db:seed-fake` fills the local Supabase stack with about two years of invented plays. It refuses any address that is not 127.0.0.1 or localhost, and it is safe to run again. `fixtures/fake-export/` holds a fake export file in the assumed Spotify format. Its keys are unverified guesses and its data is fake.
+
 ## Make your own
 
 Fork it, change it, and run it for yourself, for noncommercial purposes. You will need your own:
