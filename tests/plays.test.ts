@@ -1,3 +1,4 @@
+import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { readSiteLog, testEnv, waitForSiteLog, type SiteName } from "./support/env";
 
@@ -169,6 +170,21 @@ describe("the plays table", () => {
     expect(((await res.json()) as { code: string }).code).toBe("23502");
   });
 
+  it("indexes ended_at, so a range of play times needs no full scan", async () => {
+    const db = new Client({ connectionString: env.dbUrl });
+    await db.connect();
+    try {
+      const result = await db.query<{ indexdef: string }>(
+        `select indexdef from pg_indexes
+          where schemaname = 'public' and tablename = 'plays' and indexname = 'plays_ended_at_idx'`,
+      );
+      expect(result.rows).toHaveLength(1);
+      expect(result.rows[0]!.indexdef).toMatch(/\(ended_at\)$/);
+    } finally {
+      await db.end();
+    }
+  });
+
   it("accepts a zero ms_played and a missing album", async () => {
     expect((await insertPlays([play(1, { ms_played: 0, album_name: null })])).status).toBe(201);
     await clearPlays();
@@ -199,10 +215,12 @@ describe.each([
 
   it("reads no play", async () => {
     const res = await fetch(`${env.apiUrl}/rest/v1/plays?select=*`, { headers: headers() });
-    const body: unknown = await res.json().catch(() => null);
+    const body = (await res.json()) as { code?: string; message?: string };
 
-    expect([200, 401, 403]).toContain(res.status);
-    if (res.status === 200) expect(body).toEqual([]);
+    // The role holds no SELECT privilege, so PostgREST answers 401 with Postgres code 42501.
+    expect(res.status).toBe(401);
+    expect(body.code).toBe("42501");
+    expect(body.message).toBe("permission denied for table plays");
     expect(JSON.stringify(body)).not.toContain("Synthetic");
   });
 
@@ -212,8 +230,8 @@ describe.each([
       headers: headers({ Prefer: "count=exact" }),
     });
 
-    expect([200, 401, 403]).toContain(res.status);
-    if (res.status === 200) expect(res.headers.get("content-range")).toMatch(/\/0$/);
+    expect(res.status).toBe(401);
+    expect(res.headers.get("content-range")).toBeNull();
   });
 
   it("writes no play, with a valid row, an update or a delete", async () => {
